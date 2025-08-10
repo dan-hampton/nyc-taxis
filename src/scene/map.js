@@ -49,7 +49,7 @@ function makeLabel(text, color = '#7ef', fontSize = 14) {
   tex.minFilter = THREE.LinearFilter;
   const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false });
   const sprite = new THREE.Sprite(mat);
-  sprite.scale.set(40, 20, 1);
+  sprite.scale.set(20, 10, 1);
   return sprite;
 }
 
@@ -152,20 +152,46 @@ function buildBoroughs(group, gj) {
   const minLon = bounds.minLon + margin, maxLon = bounds.minLon + span.lon - margin;
   const minLat = bounds.minLat + margin, maxLat = bounds.minLat + span.lat - margin;
   const ringWithin = (ring) => ring.some(([lon,lat]) => lon>=minLon && lon<=maxLon && lat>=minLat && lat<=maxLat);
+  const pendingLabels = []; // { name, lon, lat }
   for (const f of gj.features) {
     const geom = f.geometry;
     if (!geom) continue;
+    const name = (f.properties && (f.properties.boro_name || f.properties.name || f.properties.BoroName)) || null;
     if (geom.type === 'Polygon') {
       // geom.coordinates is array of rings for one polygon
       const filtered = geom.coordinates.filter(ringWithin);
-      if (filtered.length) drawPoly(filtered, group, lineMat, fillMat);
+      if (filtered.length) {
+        drawPoly(filtered, group, lineMat, fillMat);
+        if (name) {
+          // Use first ring (outer boundary) for centroid
+            const ring = filtered[0];
+            let sx=0, sy=0; for (const [lon,lat] of ring) { sx+=lon; sy+=lat; }
+            const count = ring.length || 1;
+            pendingLabels.push({ name, lon: sx/count, lat: sy/count });
+        }
+      }
     } else if (geom.type === 'MultiPolygon') {
       for (const poly of geom.coordinates) {
         // each poly is array of rings
         const filtered = poly.filter(ringWithin);
-        if (filtered.length) drawPoly(filtered, group, lineMat, fillMat);
+        if (filtered.length) {
+          drawPoly(filtered, group, lineMat, fillMat);
+          if (name) {
+            const ring = filtered[0];
+            let sx=0, sy=0; for (const [lon,lat] of ring) { sx+=lon; sy+=lat; }
+            const count = ring.length || 1;
+            pendingLabels.push({ name, lon: sx/count, lat: sy/count });
+          }
+        }
       }
     }
+  }
+  // Add labels after geometry so sprites render on top
+  const seen = new Set();
+  for (const lbl of pendingLabels) {
+    if (seen.has(lbl.name)) continue; // avoid duplicates across multipolygons
+    seen.add(lbl.name);
+    addLabel(group, lbl.name, lbl.lon, lbl.lat, '#7ef');
   }
 }
 
@@ -201,26 +227,28 @@ async function buildRoads(group) {
   const minLat = bounds.minLat, maxLat = bounds.minLat + span.lat;
   // Collect polylines of THREE.Vector3 (x,y,z) for graph after loading
   const polylines = [];
+  const namedPolylines = []; // { name, points:[Vector3] }
   for (const file of roadFiles) {
     try {
       const gj = await fetchGeo(file);
       for (const f of (gj.features||[])) {
-        const geom = f.geometry;
+  const geom = f.geometry;
         if (!geom) continue;
         const highway = (f.properties && f.properties.highway) || '';
         if (!/motorway|trunk|primary|secondary|tertiary|residential|unclassified|service/.test(highway)) continue;
         const major = /motorway|trunk|primary|secondary/.test(highway);
+  const roadName = (f.properties && f.properties.name) || '';
         // Helper to test if any coord inside bbox
         const within = (coords) => coords.some(([lon,lat]) => lon>=minLon && lon<=maxLon && lat>=minLat && lat<=maxLat);
         if (geom.type === 'LineString') {
           if (!within(geom.coordinates)) continue;
-          const pts = addRoadLine(group, roadGroup, geom.coordinates, major ? matPrimary : matMinor); if (pts) { polylines.push(pts); added++; }
+          const pts = addRoadLine(group, roadGroup, geom.coordinates, major ? matPrimary : matMinor); if (pts) { polylines.push(pts); if (roadName) namedPolylines.push({ name: roadName, points: pts }); added++; }
         } else if (geom.type === 'MultiLineString') {
-          for (const seg of geom.coordinates) { if (!within(seg)) continue; const pts = addRoadLine(group, roadGroup, seg, major ? matPrimary : matMinor); if (pts) { polylines.push(pts); added++; } }
+          for (const seg of geom.coordinates) { if (!within(seg)) continue; const pts = addRoadLine(group, roadGroup, seg, major ? matPrimary : matMinor); if (pts) { polylines.push(pts); if (roadName) namedPolylines.push({ name: roadName, points: pts }); added++; } }
         } else if (geom.type === 'Polygon') {
-          const ring = geom.coordinates[0]; if (!within(ring)) continue; const pts = addRoadLine(group, roadGroup, ring, major ? matPrimary : matMinor); if (pts) { polylines.push(pts); added++; }
+          const ring = geom.coordinates[0]; if (!within(ring)) continue; const pts = addRoadLine(group, roadGroup, ring, major ? matPrimary : matMinor); if (pts) { polylines.push(pts); if (roadName) namedPolylines.push({ name: roadName, points: pts }); added++; }
         } else if (geom.type === 'MultiPolygon') {
-          for (const poly of geom.coordinates) { const ring = poly[0]; if (!within(ring)) continue; const pts = addRoadLine(group, roadGroup, ring, major ? matPrimary : matMinor); if (pts) { polylines.push(pts); added++; } }
+          for (const poly of geom.coordinates) { const ring = poly[0]; if (!within(ring)) continue; const pts = addRoadLine(group, roadGroup, ring, major ? matPrimary : matMinor); if (pts) { polylines.push(pts); if (roadName) namedPolylines.push({ name: roadName, points: pts }); added++; } }
         }
       }
     } catch(e) { /* ignore */ }
@@ -229,6 +257,30 @@ async function buildRoads(group) {
   group.add(roadGroup);
   // Build routing graph & expose
   group.userData.roadRouter = buildRoadRouter(polylines);
+  // Build simple nearest-road name lookup (linear scan for now)
+  function nearestRoadName(worldPos, maxDist = 3.0) { // maxDist in world units
+    let bestName = '';
+    let bestD2 = maxDist * maxDist;
+    const px = worldPos.x, pz = worldPos.z;
+    for (const r of namedPolylines) {
+      const pts = r.points;
+      for (let i=0;i<pts.length-1;i++) {
+        const a = pts[i];
+        const b = pts[i+1];
+        // segment distance squared in XZ plane
+        const abx = b.x - a.x; const abz = b.z - a.z;
+        const apx = px - a.x; const apz = pz - a.z;
+        const abLen2 = abx*abx + abz*abz; if (abLen2 === 0) continue;
+        let t = (apx*abx + apz*abz) / abLen2; if (t < 0) t = 0; else if (t > 1) t = 1;
+        const cx = a.x + abx * t; const cz = a.z + abz * t;
+        const dx = px - cx; const dz = pz - cz;
+        const d2 = dx*dx + dz*dz;
+        if (d2 < bestD2) { bestD2 = d2; bestName = r.name; }
+      }
+    }
+    return bestName;
+  }
+  group.userData.roadIndex = { nearestRoadName };
 }
 
 function addRoadLine(rootGroup, roadGroup, coords, mat) {
@@ -423,9 +475,9 @@ export async function loadNYCMap(scene) {
   group.userData = { scale, bounds, span };
 
   // Water plane
-  const water = new THREE.Mesh(new THREE.PlaneGeometry(1000,1000), new THREE.MeshBasicMaterial({ color: 0x00011a }));
-  water.rotation.x = -Math.PI/2; water.position.y = -0.15; water.name='Water';
-  group.add(water);
+  // const water = new THREE.Mesh(new THREE.PlaneGeometry(1000,1000), new THREE.MeshBasicMaterial({ color: 0x00011a }));
+  // water.rotation.x = -Math.PI/2; water.position.y = -0.15; water.name='Water';
+  // group.add(water);
 
   // Detailed borough polygons (fallback order: simplified3->2->1)
   const boroughFiles = ['src/geo/boroughs-simplified3.geojson','src/geo/boroughs-simplified2.geojson','src/geo/boroughs-simplified1.geojson','src/geo/nyc-simple.geojson'];

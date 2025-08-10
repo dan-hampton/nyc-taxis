@@ -119,7 +119,7 @@ function showTripTooltip(orb, clientX, clientY) {
       tooltip.classList.remove('fade-out');
       tooltip.dataset.tripId = '';
     }, 200); // match fadeOut duration
-  }, 2000);
+  }, 1000);
 }
 
 // Remove click-based tooltip
@@ -204,9 +204,15 @@ function animate() {
     // Show date and time in the clock panel
     let dateStr = '';
     if (simulation.trips && simulation.trips.length > 0) {
-      const baseDate = simulation.trips[0].pickupDate;
-      if (baseDate instanceof Date && !isNaN(baseDate)) {
-        dateStr = formatDate(baseDate);
+      // Find the trip whose pickup time is closest to the current simulation time
+      let idx = simulation.trips.findIndex(trip => {
+        return Math.floor(trip.startTime) >= Math.floor(simulation.simulationTime);
+      });
+      if (idx === -1) idx = simulation.trips.length - 1;
+      if (idx < 0) idx = 0;
+      const tripDate = simulation.trips[idx].pickupDate;
+      if (tripDate instanceof Date && !isNaN(tripDate)) {
+        dateStr = formatDate(tripDate);
       }
     }
     clockEl.textContent = dateStr ? `${dateStr} ${formatTime(simulation.simulationTime)}` : formatTime(simulation.simulationTime);

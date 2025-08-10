@@ -31,6 +31,8 @@ export function activateOrb(orb, trip, color) {
   orb.userData.finishStarted = false;
   orb.userData.finishStart = 0;
   orb.userData.intendedColor = new THREE.Color(color);
+  // label placeholder; actual label sprite assigned externally
+  orb.userData.label = null;
 }
 
 export function deactivateOrb(orb) {
@@ -38,4 +40,10 @@ export function deactivateOrb(orb) {
   orb.userData.active = false;
   orb.userData.trip = null;
   orb.userData.baseScale = 0.4;
+  if (orb.userData.label) {
+    if (orb.userData.label.parent) orb.userData.label.parent.remove(orb.userData.label);
+    orb.userData.label.material.map.dispose();
+    orb.userData.label.material.dispose();
+    orb.userData.label = null;
+  }
 }

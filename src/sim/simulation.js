@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { activateOrb, deactivateOrb } from './pool.js';
+import { createTextLabel } from '../utils/textLabel.js';
 
 export class Simulation {
   constructor(scene, pool, trips) {
@@ -64,6 +65,29 @@ export class Simulation {
   const color = trip.vendor === 1 ? 0xfff15c : 0x27ff6c;
   this.prepareTripPath(trip);
   activateOrb(orb, trip, color);
+      // Create destination label sprite (simple lat/lon for now; could plug reverse geocode)
+      if (!orb.userData.label) {
+        let textLabel;
+        // Attempt to derive nearest road name to destination
+        if (this.router && this.scene) {
+          const mapGroup = this.scene.getObjectByName('NYCMap');
+          const idx = mapGroup && mapGroup.userData.roadIndex;
+          if (idx && idx.nearestRoadName) {
+            const destWorld = new THREE.Vector3(trip.endPos.x, 0.02, trip.endPos.z);
+            const roadName = idx.nearestRoadName(destWorld, 4.0);
+            if (roadName) textLabel = roadName;
+          }
+        }
+        if (!textLabel) {
+          const lon = trip.endPos.lon.toFixed(4);
+            const lat = trip.endPos.lat.toFixed(4);
+            textLabel = `${lat},${lon}`;
+        }
+        const label = createTextLabel(textLabel, { font: '9px monospace', color: '#bbb' });
+        label.position.set(0, 0.9, 0);
+        orb.add(label);
+        orb.userData.label = label;
+      }
       this.activeOrbs.push(orb);
       this.nextTripIndex++;
     }
@@ -120,6 +144,11 @@ export class Simulation {
         } else {
           orb.material.opacity = 0.0;
         }
+      }
+      // Keep label above orb (if added)
+      if (orb.userData.label) {
+        orb.userData.label.position.y = Math.max(0.5, orb.scale.x * 0.7 + 0.3);
+        // Ensure it faces camera: handled by Sprite automatically, but avoid depth fighting
       }
     }
 

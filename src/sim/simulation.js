@@ -11,6 +11,10 @@ export class Simulation {
     this.speed = 60; // seconds simulated per real second
     this.nextTripIndex = 0;
     this.activeOrbs = [];
+  // Auto fast-forward if there's a gap larger than this (in sim seconds)
+  // AND there are no currently active trips. This keeps the visualization
+  // lively by skipping dead air periods in the sparse sample dataset.
+  this.fastForwardGap = 5; // configurable; user-facing control could be added later
     this.tmpV1 = new THREE.Vector3();
     this.tmpV2 = new THREE.Vector3();
     this.tmpCtrl = new THREE.Vector3();
@@ -83,43 +87,60 @@ export class Simulation {
 
       const now = performance.now();
       const base = orb.userData.baseScale || 0.5;
-      const eff = orb.userData.effect;
       const remaining = 1 - progress;
-      if (!eff) {
-        // Fallback subtle pulse
-        const pulse = 1 + Math.sin(now * 0.003) * 0.05;
-        orb.scale.setScalar(base * pulse);
-      } else {
-        const phase = eff.phase;
-        if (phase === 'start') {
-          const t = (now - eff.startTime) / eff.startDuration;
-          if (t < 1) {
-            const scale = base * (1.6 - 0.6 * t); // 1.6x down to base
-            orb.scale.setScalar(scale);
-            orb.material.opacity = 0.95 - 0.25 * t;
-          } else {
-            eff.phase = 'idle';
-            orb.scale.setScalar(base);
-            orb.material.opacity = 0.70;
-            eff.idleStart = now;
+      const spawnTime = orb.userData.spawnTime;
+      if (spawnTime) {
+        const tStart = (now - spawnTime) / orb.userData.startDuration;
+        if (tStart < 1) {
+          // Ease-out growth from tiny to base, color fade from white to intended
+          const ease = 1 - Math.pow(1 - tStart, 3);
+          orb.scale.setScalar(base * (0.05 + ease * 0.95));
+          orb.material.color.copy(orb.userData.intendedColor).lerp(new THREE.Color(0xffffff), 1 - ease);
+          orb.material.opacity = 1.0 - 0.3 * ease;
+        } else {
+          // Idle subtle pulse
+          const pulse = 1 + Math.sin(now * 0.004 + base) * 0.05;
+          orb.scale.setScalar(base * pulse);
+          orb.material.color.copy(orb.userData.intendedColor);
+          orb.material.opacity = 0.7;
+          // Trigger finish if near end and not already started
+          if (!orb.userData.finishStarted && remaining < 0.05) {
+            orb.userData.finishStarted = true;
+            orb.userData.finishStart = now;
           }
-        } else if (phase === 'idle') {
-          const t = (now - (eff.idleStart||eff.startTime)) * 0.0025;
-            const pulse = 1 + Math.sin(t) * 0.04;
-            orb.scale.setScalar(base * pulse);
-            if (remaining < 0.05) {
-              eff.phase = 'finish';
-              eff.finishStart = now;
-            }
-        } else if (phase === 'finish') {
-          const t = (now - eff.finishStart) / eff.finishDuration;
-          if (t < 1) {
-            const scale = base * (1 + t * 1.4); // grow to 2.4x
-            orb.scale.setScalar(scale);
-            orb.material.opacity = 0.70 * (1 - t);
-          } else {
-            orb.material.opacity = 0.0;
-          }
+        }
+      }
+      if (orb.userData.finishStarted) {
+        const tFin = (now - orb.userData.finishStart) / orb.userData.finishDuration;
+        if (tFin < 1) {
+          const easeF = Math.pow(tFin, 0.7);
+          orb.scale.setScalar(base * (1 + easeF * 2.0));
+          orb.material.opacity = 0.7 * (1 - easeF);
+          orb.material.color.copy(orb.userData.intendedColor).offsetHSL(0.02, 0.2 * easeF, 0.15 * easeF);
+        } else {
+          orb.material.opacity = 0.0;
+        }
+      }
+    }
+
+    // If playing, and there are no active trips, and the next trip is sufficiently far in the future,
+    // jump time forward to its start so user doesn't wait through empty gaps.
+    if (this.playing && this.activeOrbs.length === 0 && this.nextTripIndex < this.trips.length) {
+      const nextTrip = this.trips[this.nextTripIndex];
+      const gap = nextTrip.startTime - this.simulationTime;
+      if (gap > this.fastForwardGap) {
+        this.simulationTime = nextTrip.startTime;
+        // Activate any trips starting at this new time (multiple may share the timestamp)
+        while (this.nextTripIndex < this.trips.length) {
+          const trip = this.trips[this.nextTripIndex];
+          if (trip.startTime > this.simulationTime) break;
+          const orb = this.pool.find(o => !o.userData.active);
+          if (!orb) break; // pool exhausted
+          const color = trip.vendor === 1 ? 0xfff15c : 0x27ff6c;
+          this.prepareTripPath(trip);
+          activateOrb(orb, trip, color);
+          this.activeOrbs.push(orb);
+          this.nextTripIndex++;
         }
       }
     }

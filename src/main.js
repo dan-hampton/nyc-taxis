@@ -73,6 +73,14 @@ function formatTime(sec) {
   return `${h}:${m}:${s}`;
 }
 
+function formatDate(date) {
+  // Returns YYYY-MM-DD
+  const y = date.getFullYear();
+  const m = String(date.getMonth()+1).padStart(2,'0');
+  const d = String(date.getDate()).padStart(2,'0');
+  return `${y}-${m}-${d}`;
+}
+
 // Raycaster for interaction
 const raycaster = new THREE.Raycaster();
 const mouse = new THREE.Vector2();
@@ -85,26 +93,36 @@ function onPointerMove(e) {
 }
 window.addEventListener('pointermove', onPointerMove);
 
-function handleClick(e) {
-  if (!simulation) return;
-  raycaster.setFromCamera(mouse, camera);
-  const intersects = raycaster.intersectObjects(simulation.activeOrbs);
-  if (intersects.length) {
-    const orb = intersects[0].object;
-    const trip = orb.userData.trip;
-    if (trip) {
-      const fare = trip.fare.toFixed(2);
-      tooltip.innerHTML = `<h4>Trip</h4><b>Fare:</b> $${fare}<br><b>Passengers:</b> ${trip.passengers}<br><b>Start:</b> ${formatTime(trip.startTime)}<br><b>End:</b> ${formatTime(trip.endTime)}<br><b>Vendor:</b> ${trip.vendor}`;
-      tooltip.hidden = false;
-      tooltip.style.left = e.clientX + 'px';
-      tooltip.style.top = e.clientY + 'px';
-      tooltip.classList.remove('fade-in');
-      void tooltip.offsetWidth; // reflow
-      tooltip.classList.add('fade-in');
-    }
+let tooltipTimeout = null;
+
+function showTripTooltip(orb, clientX, clientY) {
+  const trip = orb.userData.trip;
+  if (!trip) return;
+  const fare = trip.fare.toFixed(2);
+  // Only update content and position if not already showing for this orb
+  if (tooltip.dataset.tripId !== String(trip.id)) {
+    tooltip.innerHTML = `<h4>Trip</h4><b>Fare:</b> $${fare}<br><b>Passengers:</b> ${trip.passengers}<br><b>Start:</b> ${formatTime(trip.startTime)}<br><b>End:</b> ${formatTime(trip.endTime)}<br><b>Vendor:</b> ${trip.vendor}`;
+    tooltip.style.left = clientX + 'px';
+    tooltip.style.top = clientY + 'px';
+    tooltip.dataset.tripId = String(trip.id);
   }
+  tooltip.hidden = false;
+  tooltip.classList.remove('fade-in', 'fade-out');
+  void tooltip.offsetWidth;
+  tooltip.classList.add('fade-in');
+  if (tooltipTimeout) clearTimeout(tooltipTimeout);
+  tooltipTimeout = setTimeout(() => {
+    tooltip.classList.remove('fade-in');
+    tooltip.classList.add('fade-out');
+    setTimeout(() => {
+      tooltip.hidden = true;
+      tooltip.classList.remove('fade-out');
+      tooltip.dataset.tripId = '';
+    }, 200); // match fadeOut duration
+  }, 2000);
 }
-window.addEventListener('click', handleClick);
+
+// Remove click-based tooltip
 window.addEventListener('keydown', (e) => { if (e.key === 'Escape') tooltip.hidden = true; });
 
 playPauseBtn.addEventListener('click', () => {
@@ -183,7 +201,15 @@ function animate() {
   last = now;
   if (simulation) {
     simulation.update(dt);
-    clockEl.textContent = formatTime(simulation.simulationTime);
+    // Show date and time in the clock panel
+    let dateStr = '';
+    if (simulation.trips && simulation.trips.length > 0) {
+      const baseDate = simulation.trips[0].pickupDate;
+      if (baseDate instanceof Date && !isNaN(baseDate)) {
+        dateStr = formatDate(baseDate);
+      }
+    }
+    clockEl.textContent = dateStr ? `${dateStr} ${formatTime(simulation.simulationTime)}` : formatTime(simulation.simulationTime);
     slider.value = Math.floor(simulation.simulationTime);
   // Heatmap update disabled (trails off)
   // if (mapGroup && mapGroup.userData.heat) { mapGroup.userData.heat.update(simulation.activeOrbs); }
@@ -197,28 +223,28 @@ function animate() {
       const first = intersects[0].object;
       if (hoverOrb !== first) {
         if (hoverOrb) {
-          // Only reset scale if no special effects active
           if (!hoverOrb.userData.startEffectStart && !hoverOrb.userData.finishing) {
             hoverOrb.scale.setScalar(hoverOrb.userData.baseScale);
           }
         }
         hoverOrb = first;
-        // Only apply hover if no special effects active
         if (!hoverOrb.userData.startEffectStart && !hoverOrb.userData.finishing) {
           hoverOrb.scale.setScalar(hoverOrb.userData.baseScale * hoverScaleBoost);
         }
+        // Show tooltip on hover
+        showTripTooltip(hoverOrb, mouse.x * window.innerWidth / 2 + window.innerWidth / 2, -mouse.y * window.innerHeight / 2 + window.innerHeight / 2);
       } else {
-        // Only apply hover if no special effects active
         if (!hoverOrb.userData.startEffectStart && !hoverOrb.userData.finishing) {
           hoverOrb.scale.setScalar(hoverOrb.userData.baseScale * hoverScaleBoost);
         }
       }
     } else if (hoverOrb) {
-      // Only reset scale if no special effects active
       if (!hoverOrb.userData.startEffectStart && !hoverOrb.userData.finishing) {
         hoverOrb.scale.setScalar(hoverOrb.userData.baseScale);
       }
       hoverOrb = null;
+      // Don't hide tooltip immediately; let timeout handle it
+      // Only clear timeout if a new hover starts
     }
   }
 

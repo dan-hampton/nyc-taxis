@@ -12,6 +12,9 @@ body { overflow: hidden; }
 #controls button[aria-pressed=false] { background:#092348; }
 #tooltip { position:fixed; pointer-events:none; background:rgba(8,20,40,0.9); color:#e9faff; font-size:0.65rem; line-height:1.4; padding:0.6rem 0.75rem; border:1px solid #1d4d8a; border-radius:8px; box-shadow:0 0 12px -2px #19c3ff, 0 0 32px -6px #0057ff inset; max-width:220px; z-index:20; transform:translate(-50%, -120%); }
 #tooltip h4 { margin:0 0 0.25rem; font-size:0.7rem; letter-spacing:0.06em; text-transform:uppercase; color:#5cd8ff; }
+/* Fade in and fade out for tooltip */
 .fade-in { animation: fadeIn 0.3s ease forwards; }
+.fade-out { animation: fadeOut 0.3s ease forwards; }
 @keyframes fadeIn { from { opacity:0; transform:translateY(-6px);} to { opacity:1; transform:translateY(0);} }
+@keyframes fadeOut { from { opacity:1; transform:translateY(0);} to { opacity:0; transform:translateY(-6px);} }
 @media (max-width: 720px) { #controls input[type=range]{ width:160px; } }

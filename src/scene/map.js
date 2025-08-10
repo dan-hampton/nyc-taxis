@@ -235,7 +235,7 @@ async function buildRoads(group) {
   const geom = f.geometry;
         if (!geom) continue;
         const highway = (f.properties && f.properties.highway) || '';
-        if (!/motorway|trunk|primary|secondary|tertiary|unclassified|service/.test(highway)) continue; //residential removed
+        if (!/motorway|trunk|primary|secondary|tertiary|unclassified|residential|service/.test(highway)) continue; //residential removed
         const major = /motorway|trunk|primary|secondary/.test(highway);
   const roadName = (f.properties && f.properties.name) || '';
         // Helper to test if any coord inside bbox

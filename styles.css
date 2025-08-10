@@ -43,6 +43,21 @@ body { overflow: hidden; }
 	align-items:center;
 	gap:0.7em;
 }
+#fareTotal {
+	font-size:0.8rem;
+	letter-spacing:0.08em;
+	font-weight:500;
+	opacity:0.92;
+	background:rgba(0,32,64,0.3);
+	padding:0.18rem 0.32rem;
+	border:1px solid rgba(80,128,255,0.25);
+	border-radius:6px;
+	align-self:flex-start;
+	display:flex;
+	flex-direction:row;
+	align-items:center;
+	gap:0.7em;
+}
 .main-label {
 	margin-right:0.7em;
 }

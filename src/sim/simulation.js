@@ -146,7 +146,7 @@ export class Simulation {
   const trail = this.createTrailForTrip(trip, color);
       // Create destination label sprite (simple lat/lon for now; could plug reverse geocode)
       if (!orb.userData.label) {
-        let textLabel;
+        let textLabelStr;
         // Attempt to derive nearest road name to destination
         if (this.router && this.scene) {
           const mapGroup = this.scene.getObjectByName('NYCMap');
@@ -154,18 +154,19 @@ export class Simulation {
           if (idx && idx.nearestRoadName) {
             const destWorld = new THREE.Vector3(trip.endPos.x, 0.02, trip.endPos.z);
             const roadName = idx.nearestRoadName(destWorld, 4.0);
-            if (roadName) textLabel = roadName;
+            if (roadName) textLabelStr = roadName;
           }
         }
-        if (!textLabel) {
+        if (!textLabelStr) {
           const lon = trip.endPos.lon.toFixed(4);
-            const lat = trip.endPos.lat.toFixed(4);
-            textLabel = `${lat},${lon}`;
+          const lat = trip.endPos.lat.toFixed(4);
+          textLabelStr = `${lat},${lon}`;
         }
-        const label = createTextLabel(textLabel, { font: '9px monospace', color: '#bbb' });
+        const label = createTextLabel(textLabelStr, { font: '9px monospace', color: '#bbb' });
         label.position.set(0, 0.9, 0);
         orb.add(label);
         orb.userData.label = label;
+        trip.destinationLabel = textLabelStr; // store for external status messages
       }
   if (!trip._started) { trip._started = true; this.startedCount++; }
       this.activeOrbs.push(orb);

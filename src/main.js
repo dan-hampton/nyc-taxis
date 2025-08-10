@@ -63,6 +63,7 @@ const tripCounterEl = document.getElementById('tripCounter');
 const tripsStartedEl = document.getElementById('tripsStarted');
 const tripsActiveEl = document.getElementById('tripsActive');
 const tripsCompletedEl = document.getElementById('tripsCompleted');
+const fareTotalValueEl = document.getElementById('fareTotalValue');
 const slider = document.getElementById('timeline');
 const playPauseBtn = document.getElementById('playPause');
 const speedSel = document.getElementById('speed');
@@ -72,6 +73,7 @@ let simulation; // will hold Simulation instance
 let mapGroup; // reference to NYCMap group for heat layer
 let tripsCompleted = 0;
 let lastActiveIds = new Set();
+let totalFare = 0; // accumulated fare of completed trips
 
 function formatTime(sec) {
   sec = Math.max(0, Math.floor(sec) % 86400);
@@ -177,7 +179,8 @@ if (!statusEl) {
   statusEl.style.background='rgba(0,0,0,0.55)';
   statusEl.style.font='12px/1.2 monospace';
   statusEl.style.color='#8ff';
-  statusEl.style.zIndex='20';
+  statusEl.style.zIndex='9999';
+  statusEl.style.pointerEvents='none';
   document.body.appendChild(statusEl);
 }
 function setStatus(m) {
@@ -189,7 +192,7 @@ function setStatus(m) {
     statusEl.style.transition = 'opacity 0.5s';
     statusEl.style.opacity = '0';
     // Do NOT remove statusEl from DOM, just fade out
-  }, 4000);
+  }, 2500);
 }
 
 async function init() {
@@ -298,19 +301,18 @@ function animate() {
     if (tripsActiveEl) tripsActiveEl.textContent = activeCount;
     if (tripsCompletedEl) tripsCompletedEl.textContent = simulation.completedCount;
 
-    // Fare complete status for newly completed trips
-    if (simulation.completedTrips && Array.isArray(simulation.completedTrips)) {
-      if (!animate._lastCompletedCount) animate._lastCompletedCount = 0;
-      if (simulation.completedTrips.length > animate._lastCompletedCount) {
-        // Only show status for new completions
-        for (let i = animate._lastCompletedCount; i < simulation.completedTrips.length; i++) {
-          const trip = simulation.completedTrips[i];
-          // Address fallback: use dropoff or 'Trip End'
-          const address = trip.dropoffAddress || trip.dropoff || 'Trip End';
-          const cost = trip.fare ? trip.fare.toFixed(2) : '0.00';
-          setStatus(`Fare complete, ${address}: $${cost}`);
+    // Fare complete status for newly completed trips (iterate all; per-trip flag prevents repeats)
+    if (simulation.trips && simulation.trips.length) {
+      for (const trip of simulation.trips) {
+        if (!trip._fareAnnounced && trip.endTime <= simulation.simulationTime) {
+          trip._fareAnnounced = true;
+          const fareNum = (typeof trip.fare === 'number') ? trip.fare : 0;
+          totalFare += fareNum;
+          if (fareTotalValueEl) fareTotalValueEl.textContent = totalFare.toFixed(2);
+          const address = trip.destinationLabel || trip.dropoffAddress || trip.dropoff || 'Trip End';
+          const cost = fareNum.toFixed(2);
+          setStatus(`Dropoff: ${address} - $${cost}`);
         }
-        animate._lastCompletedCount = simulation.completedTrips.length;
       }
     }
 

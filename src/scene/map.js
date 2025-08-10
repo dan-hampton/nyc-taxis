@@ -1,3 +1,27 @@
+// Load and plot a .poly boundary file as a magenta outline
+async function addPolyOutline(group, polyPath, color = 0xff00ff) {
+  // Fetch and parse poly file
+  const res = await fetch(polyPath);
+  if (!res.ok) { console.warn('Failed to load poly file', polyPath); return; }
+  const text = await res.text();
+  // Extract coordinates (lines with two floats)
+  const coords = [];
+  for (const line of text.split(/\r?\n/)) {
+    const m = line.match(/(-?\d+\.\d+E?[+-]?\d*)\s+(-?\d+\.\d+E?[+-]?\d*)/);
+    if (m) coords.push([parseFloat(m[1]), parseFloat(m[2])]);
+  }
+  if (coords.length < 3) { console.warn('Poly file has too few coords'); return; }
+  // Project and plot
+  const { bounds, span, scale } = group.userData;
+  const pts = coords.map(([lon,lat]) => {
+    const v = projectLonLat(lon, lat, bounds, span, scale);
+    return new THREE.Vector3(v.x, 0.12, v.z);
+  });
+  const geo = new THREE.BufferGeometry().setFromPoints(pts);
+  const line = new THREE.LineLoop(geo, new THREE.LineBasicMaterial({ color, transparent:true, opacity:0.8 }));
+  line.name = 'NYPolyOutline';
+  group.add(line);
+}
 import * as THREE from 'three';
 
 // Utility to fetch and parse GeoJSON
@@ -25,6 +49,24 @@ function addLandmarkOutline(group, coords, color, name) {
   const line = new THREE.LineLoop(geo, mat);
   line.name = name;
   group.add(line);
+}
+
+// Draw filled polygon with outline
+function addFilledPolygon(group, coords, fillColor, outlineColor, name) {
+  const shape = new THREE.Shape();
+  coords.forEach(([lon, lat], i) => {
+    const v = projectLonLat(lon, lat, group.userData.bounds, group.userData.span, group.userData.scale);
+    if (i === 0) shape.moveTo(v.x, v.z); else shape.lineTo(v.x, v.z);
+  });
+  // Filled mesh
+  const meshGeo = new THREE.ShapeGeometry(shape);
+  const meshMat = new THREE.MeshBasicMaterial({ color: fillColor, transparent: true, opacity: 0.35, depthWrite: false });
+  const mesh = new THREE.Mesh(meshGeo, meshMat);
+  mesh.position.y = 0.04;
+  mesh.name = name + '_fill';
+  group.add(mesh);
+  // Outline
+  addLandmarkOutline(group, coords, outlineColor, name + '_outline');
 }
 
 // Create canvas-based text sprite label
@@ -101,7 +143,7 @@ async function addGeoLandmark(group, {
       }
     }
     if (best) {
-      // Ensure closed loop for LineString-derived outlines
+      // Draw boundary outline as before
       const coords = best.coords;
       const first = coords[0];
       const last = coords[coords.length - 1];
@@ -115,6 +157,58 @@ async function addGeoLandmark(group, {
         addLabel(group, label, cx, cy, '#' + color.toString(16).padStart(6,'0'));
       }
     }
+    // Always draw inner details for Central Park, regardless of boundary match
+    if (url.includes('centralpark.geojson')) {
+      drawCentralParkInnerDetails(group, gj.features, color);
+    }
+// Draw inner features of Central Park (paths, lakes, playgrounds, etc.)
+function drawCentralParkInnerDetails(group, features, baseColor) {
+  const pathColor = 0x00eaff;
+  const waterFill = 0x3f8fff, waterOutline = 0x1a4a99;
+  const playgroundFill = 0xffe600, playgroundOutline = 0xffa600;
+  const fieldFill = 0x4cff92, fieldOutline = 0x1a994c;
+  for (const f of features) {
+    if (!f.geometry || !f.properties) continue;
+    const t = f.geometry.type;
+    // Paths: draw as Line
+    if (f.properties.highway && ['path','footway','cycleway'].includes(f.properties.highway)) {
+      const coords = t === 'LineString' ? f.geometry.coordinates : (t === 'MultiLineString' ? f.geometry.coordinates.flat() : null);
+      if (coords && coords.length > 1) {
+        // Use Line, not LineLoop, for paths
+        const pts = coords.map(([lon, lat]) => {
+          const v = projectLonLat(lon, lat, group.userData.bounds, group.userData.span, group.userData.scale);
+          return new THREE.Vector3(v.x, 0.06, v.z);
+        });
+        const geo = new THREE.BufferGeometry().setFromPoints(pts);
+        const mat = new THREE.LineBasicMaterial({ color: pathColor, transparent: true, opacity: 0.7 });
+        const line = new THREE.Line(geo, mat);
+        line.name = 'CP_Path';
+        group.add(line);
+      }
+    }
+    // Water: draw as filled Mesh with outline
+    if (f.properties.natural === 'water') {
+      const coords = t === 'Polygon' ? f.geometry.coordinates[0] : (t === 'MultiPolygon' ? f.geometry.coordinates.flat(2) : null);
+      if (coords && coords.length > 2) {
+        addFilledPolygon(group, coords, waterFill, waterOutline, 'CP_Lake');
+      }
+    }
+    // Playgrounds: filled Mesh with outline
+    if (f.properties.leisure === 'playground') {
+      const coords = t === 'Polygon' ? f.geometry.coordinates[0] : (t === 'MultiPolygon' ? f.geometry.coordinates.flat(2) : null);
+      if (coords && coords.length > 2) {
+        addFilledPolygon(group, coords, playgroundFill, playgroundOutline, 'CP_Playground');
+      }
+    }
+    // Fields (park, pitch): filled Mesh with outline
+    if (f.properties.leisure && ['park','pitch'].includes(f.properties.leisure)) {
+      const coords = t === 'Polygon' ? f.geometry.coordinates[0] : (t === 'MultiPolygon' ? f.geometry.coordinates.flat(2) : null);
+      if (coords && coords.length > 2) {
+        addFilledPolygon(group, coords, fieldFill, fieldOutline, 'CP_Field');
+      }
+    }
+  }
+}
   } catch(e) {
     // silent fail; landmark optional
   }
@@ -148,9 +242,11 @@ function buildBoroughs(group, gj) {
   const fillMat = new THREE.MeshBasicMaterial({ color: 0x05070a, transparent: true, opacity: 0.55 });
   // Apply same NYC bounding box limiting as roads so we don't draw far away polygons
   const { bounds, span } = group.userData;
-  const margin = 0.15;
-  const minLon = bounds.minLon + margin, maxLon = bounds.minLon + span.lon - margin;
-  const minLat = bounds.minLat + margin, maxLat = bounds.minLat + span.lat - margin;
+  // Dynamic margin proportional to current span (older fixed 0.15 over-cropped small spans)
+  const marginLon = span.lon * 0.03; // 3% each side
+  const marginLat = span.lat * 0.03;
+  const minLon = bounds.minLon + marginLon, maxLon = bounds.minLon + span.lon - marginLon;
+  const minLat = bounds.minLat + marginLat, maxLat = bounds.minLat + span.lat - marginLat;
   const ringWithin = (ring) => ring.some(([lon,lat]) => lon>=minLon && lon<=maxLon && lat>=minLat && lat<=maxLat);
   const pendingLabels = []; // { name, lon, lat }
   for (const f of gj.features) {
@@ -215,7 +311,7 @@ function drawPoly(rings, group, lineMat, fillMat) {
 }
 
 async function buildRoads(group) {
-  const roadFiles = ['src/geo/roads-simplified1.geojson','src/geo/roads-simplified2.geojson','src/geo/roads-simplified3.geojson'];
+  const roadFiles = ['src/geo/roads.geojson'];
   const matPrimary = new THREE.LineBasicMaterial({ color: 0x148aff, transparent: true, opacity: 0.52 });
   const matMinor = new THREE.LineBasicMaterial({ color: 0x0da0ff, transparent: true, opacity: 0.22 });
   const roadGroup = new THREE.Group();
@@ -223,8 +319,10 @@ async function buildRoads(group) {
   let added = 0;
   const { bounds, span, scale } = group.userData;
   // NYC bbox for filtering
-  const minLon = bounds.minLon, maxLon = bounds.minLon + span.lon;
-  const minLat = bounds.minLat, maxLat = bounds.minLat + span.lat;
+  // Slightly extend filtering bbox by 2% to avoid clipping near edges
+  const padLon = span.lon * 0.02, padLat = span.lat * 0.02;
+  const minLon = bounds.minLon - padLon, maxLon = bounds.minLon + span.lon + padLon;
+  const minLat = bounds.minLat - padLat, maxLat = bounds.minLat + span.lat + padLat;
   // Collect polylines of THREE.Vector3 (x,y,z) for graph after loading
   const polylines = [];
   const namedPolylines = []; // { name, points:[Vector3] }
@@ -235,7 +333,7 @@ async function buildRoads(group) {
   const geom = f.geometry;
         if (!geom) continue;
         const highway = (f.properties && f.properties.highway) || '';
-        if (!/motorway|trunk|primary|secondary|tertiary|unclassified|residential|service/.test(highway)) continue; //residential removed
+        if (!/motorway|trunk|primary|secondary|tertiary|unclassified|residential|service/.test(highway)) continue; 
         const major = /motorway|trunk|primary|secondary/.test(highway);
   const roadName = (f.properties && f.properties.name) || '';
         // Helper to test if any coord inside bbox
@@ -466,59 +564,154 @@ function buildHeatmapLayer(group) {
   group.userData.heat = { update };
 }
 
-export async function loadNYCMap(scene) {
+// Helper: compute center (lon,lat) of Central Park from its GeoJSON (no hard-coded coords)
+async function computeCentralParkCenter(url) {
+  try {
+    const gj = await fetchGeo(url);
+    if (!gj || !gj.features) return null;
+    let target = null;
+    for (const f of gj.features) {
+      if (!f || !f.geometry) continue;
+      const props = f.properties || {};
+      if (props.name === 'Central Park') { target = f; break; }
+      // Fallback: keep largest feature by coordinate count
+      if (!target) target = f; else {
+        const prev = extractCoords(target.geometry) || [];
+        const cur = extractCoords(f.geometry) || [];
+        if (cur.length > prev.length) target = f;
+      }
+    }
+    if (!target) return null;
+    const coords = extractCoords(target.geometry) || [];
+    if (!coords.length) return null;
+    let sx = 0, sy = 0; for (const [lon,lat] of coords) { sx += lon; sy += lat; }
+    return { lon: sx/coords.length, lat: sy/coords.length };
+  } catch(e) { return null; }
+}
+
+// /**
+//  * Load NYC map centered on Central Park with dynamic geographic span.
+//  * Visual world size now scales with radius (previously fixed size, so radius appeared to have no effect).
+//  * @param {THREE.Scene} scene
+//  * @param {object} opts
+//  * @param {number} opts.radiusKm Approx radius (km) to include around Central Park (default 12)
+//  * @param {number} opts.unitsPerKm World units per kilometer (default 4; original ~4 units/km baseline)
+//  */
+// export async function loadNYCMap(scene, opts = {}) {
+//   const { radiusKm = 12, unitsPerKm = 4 } = opts; // radiusKm previously ineffective; now drives scale
+//   const group = new THREE.Group();
+//   group.name = 'NYCMap';
+//   // Derive central park center first (async)
+//   const cpCenter = await computeCentralParkCenter('src/geo/centralpark.geojson');
+//   // Fallback: if central park load failed, retain previous hard-coded bounds to avoid crash
+//   let bounds, span;
+//   if (cpCenter) {
+//     const centerLon = cpCenter.lon;
+//     const centerLat = cpCenter.lat;
+//     // Convert radius (km) to degree spans. 1 deg lat ~111 km. 1 deg lon ~ 111 * cos(lat) km.
+//     const latSpanDeg = (radiusKm * 2) / 111.0;
+//     const lonKmPerDeg = 111.0 * Math.cos(centerLat * Math.PI/180);
+//     const lonSpanDeg = (radiusKm * 2) / lonKmPerDeg;
+//     bounds = { minLon: centerLon - lonSpanDeg/2, minLat: centerLat - latSpanDeg/2 };
+//     span = { lon: lonSpanDeg, lat: latSpanDeg };
+//   } else {
+//     bounds = { minLon: -74.30, minLat: 40.45 }; // legacy fallback
+//     span = { lon: -73.65 - bounds.minLon, lat: 40.95 - bounds.minLat };
+//   }
+//   // Derive world scale from requested radius: diameter = 2*radiusKm -> scale = diameter * unitsPerKm
+//   const scale = radiusKm * 2 * unitsPerKm;
+//   const center = { lon: bounds.minLon + span.lon/2, lat: bounds.minLat + span.lat/2 };
+//   group.userData = { scale, bounds, span, center, radiusKm, unitsPerKm };
+//   console.log('[NYCMap] Centered bounds', { center, bounds, span, radiusKm, unitsPerKm, scale });
+
+//   // Water plane
+//   // const water = new THREE.Mesh(new THREE.PlaneGeometry(1000,1000), new THREE.MeshBasicMaterial({ color: 0x00011a }));
+//   // water.rotation.x = -Math.PI/2; water.position.y = -0.15; water.name='Water';
+//   // group.add(water);
+
+//   // Detailed borough polygons (fallback order: simplified3->2->1)
+//   const boroughFiles = ['src/geo/boroughs.geojson'];
+//   for (const f of boroughFiles) {
+//     try { const gj = await fetchGeo(f); buildBoroughs(group, gj); break; } catch(e) { continue; }
+//   }
+
+//   // Roads (await so routing graph is ready when returned)
+//   await buildRoads(group);
+//   // Grid overlay
+//   buildLatLonGrid(group);
+//   // Heat layer (disabled to remove persistent trail effect)
+//   const HEAT_ENABLED = false;
+//   if (HEAT_ENABLED) buildHeatmapLayer(group);
+
+//   // Data-driven landmark outlines from GeoJSON assets (Central Park already used for centering but fetched again here for outline)
+//   await addGeoLandmark(group, {
+//     url: 'src/geo/centralpark.geojson',
+//     name: 'Central Park',
+//     color: 0x4cff92,
+//     label: 'Central Park',
+//     bbox: { minLon: -73.99, maxLon: -73.94, minLat: 40.76, maxLat: 40.81 },
+//     minPoints: 200
+//   });
+//   await addGeoLandmark(group, {
+//     url: 'src/geo/airports.geojson',
+//     name: 'John F. Kennedy International Airport',
+//     color: 0xff5ce1,
+//     label: 'JFK',
+//     bbox: { minLon: -73.90, maxLon: -73.75, minLat: 40.60, maxLat: 40.67 },
+//     minPoints: 300
+//   });
+//   await addGeoLandmark(group, {
+//     url: 'src/geo/airports.geojson',
+//     name: 'LaGuardia Airport',
+//     color: 0xff9f43,
+//     label: 'LaGuardia',
+//     bbox: { minLon: -73.92, maxLon: -73.84, minLat: 40.75, maxLat: 40.78 },
+//     minPoints: 150
+//   });
+
+//   scene.add(group);
+//   return group;
+// }
+
+// New implementation variant fixing radius effect
+export async function loadNYCMap(scene, opts = {}) {
+  const { radiusKm = 15, showBounds = false, roadPadFactor = 0.02, fullExtent = false } = opts;
   const group = new THREE.Group();
   group.name = 'NYCMap';
-  const scale = 220;
-  const bounds = { minLon: -74.30, minLat: 40.45 };
-  const span = { lon: -73.65 - bounds.minLon, lat: 40.95 - bounds.minLat };
-  group.userData = { scale, bounds, span };
-
-  // Water plane
-  // const water = new THREE.Mesh(new THREE.PlaneGeometry(1000,1000), new THREE.MeshBasicMaterial({ color: 0x00011a }));
-  // water.rotation.x = -Math.PI/2; water.position.y = -0.15; water.name='Water';
-  // group.add(water);
-
-  // Detailed borough polygons (fallback order: simplified3->2->1)
-  const boroughFiles = ['src/geo/boroughs-simplified3.geojson','src/geo/boroughs-simplified2.geojson','src/geo/boroughs-simplified1.geojson','src/geo/nyc-simple.geojson'];
-  for (const f of boroughFiles) {
-    try { const gj = await fetchGeo(f); buildBoroughs(group, gj); break; } catch(e) { continue; }
+  const FIXED_SCALE = 220;
+  // If fullExtent, derive bounds from roads file before anything else
+  let bounds, span;
+  if (fullExtent) {
+    try {
+      const ext = await (async()=>{ const gj = await fetchGeo('src/geo/roads.geojson'); if(!gj||!gj.features) return null; let minLon=Infinity,maxLon=-Infinity,minLat=Infinity,maxLat=-Infinity; const scan=(arr)=>{ for(const [lo,la] of arr){ if(lo<minLon)minLon=lo; if(lo>maxLon)maxLon=lo; if(la<minLat)minLat=la; if(la>maxLat)maxLat=la; } }; for(const f of gj.features){ const g=f.geometry; if(!g) continue; const t=g.type; const c=g.coordinates; if(t==='LineString') scan(c); else if(t==='MultiLineString') for(const line of c) scan(line); else if(t==='Polygon') for(const ring of c) scan(ring); else if(t==='MultiPolygon') for(const poly of c) for(const ring of poly) scan(ring); } if(minLon===Infinity) return null; return {minLon,maxLon,minLat,maxLat}; })();
+      if (ext) { bounds = { minLon: ext.minLon, minLat: ext.minLat }; span = { lon: ext.maxLon - ext.minLon, lat: ext.maxLat - ext.minLat }; console.log('[NYCMap] fullExtent bounds derived from roads', ext); }
+    } catch(e) { console.warn('[NYCMap] fullExtent extent failed', e); }
   }
-
-  // Roads (await so routing graph is ready when returned)
+  if (!bounds) {
+    const cpCenter = await computeCentralParkCenter('src/geo/centralpark.geojson');
+    if (cpCenter) {
+      const centerLon = cpCenter.lon; const centerLat = cpCenter.lat;
+      const latSpanDeg = (radiusKm * 2) / 111.0; const lonKmPerDeg = 111.0 * Math.cos(centerLat * Math.PI/180); const lonSpanDeg = (radiusKm * 2) / lonKmPerDeg;
+      bounds = { minLon: centerLon - lonSpanDeg/2, minLat: centerLat - latSpanDeg/2 }; span = { lon: lonSpanDeg, lat: latSpanDeg };
+    } else { bounds = { minLon: -74.30, minLat: 40.45 }; span = { lon: -73.65 - bounds.minLon, lat: 40.95 - bounds.minLat }; }
+  }
+  const center = { lon: bounds.minLon + span.lon/2, lat: bounds.minLat + span.lat/2 };
+  group.userData = { scale: FIXED_SCALE, bounds, span, center, radiusKm, roadPadFactor, fullExtent };
+  console.log('[NYCMap] Centered bounds (new impl)', { center, bounds, span, radiusKm, fullExtent, scale: FIXED_SCALE });
+  if (showBounds) {
+    const cornerVecs = [ projectLonLat(bounds.minLon, bounds.minLat, bounds, span, FIXED_SCALE), projectLonLat(bounds.minLon + span.lon, bounds.minLat, bounds, span, FIXED_SCALE), projectLonLat(bounds.minLon + span.lon, bounds.minLat + span.lat, bounds, span, FIXED_SCALE), projectLonLat(bounds.minLon, bounds.minLat + span.lat, bounds, span, FIXED_SCALE) ].map(v => new THREE.Vector3(v.x, 0.08, v.z));
+    const geo = new THREE.BufferGeometry().setFromPoints(cornerVecs);
+    const loop = new THREE.LineLoop(geo, new THREE.LineBasicMaterial({ color: 0xff00ff, transparent:true, opacity:0.5 }));
+    loop.name = 'DebugBounds'; group.add(loop);
+  }
+  try { const gj = await fetchGeo('src/geo/boroughs.geojson'); buildBoroughs(group, gj); } catch(e) {}
   await buildRoads(group);
-  // Grid overlay
   buildLatLonGrid(group);
-  // Heat layer (disabled to remove persistent trail effect)
-  const HEAT_ENABLED = false;
-  if (HEAT_ENABLED) buildHeatmapLayer(group);
-
-  // Data-driven landmark outlines from GeoJSON assets
-  await addGeoLandmark(group, {
-    url: 'src/geo/centralpark.geojson',
-    name: 'Central Park',
-    color: 0x4cff92,
-    label: 'Central Park',
-    bbox: { minLon: -73.99, maxLon: -73.94, minLat: 40.76, maxLat: 40.81 },
-    minPoints: 200
-  });
-  await addGeoLandmark(group, {
-    url: 'src/geo/airports.geojson',
-    name: 'John F. Kennedy International Airport',
-    color: 0xff5ce1,
-    label: 'JFK',
-    bbox: { minLon: -73.90, maxLon: -73.75, minLat: 40.60, maxLat: 40.67 },
-    minPoints: 300
-  });
-  await addGeoLandmark(group, {
-    url: 'src/geo/airports.geojson',
-    name: 'LaGuardia Airport',
-    color: 0xff9f43,
-    label: 'LaGuardia',
-    bbox: { minLon: -73.92, maxLon: -73.84, minLat: 40.75, maxLat: 40.78 },
-    minPoints: 150
-  });
-
-  scene.add(group);
-  return group;
+  const HEAT_ENABLED = false; if (HEAT_ENABLED) buildHeatmapLayer(group);
+  await addGeoLandmark(group, { url: 'src/geo/centralpark.geojson', name: 'Central Park', color: 0x4cff92, label: 'Central Park', bbox: { minLon: -73.99, maxLon: -73.94, minLat: 40.76, maxLat: 40.81 }, minPoints: 200 });
+  await addGeoLandmark(group, { url: 'src/geo/airports.geojson', name: 'John F. Kennedy International Airport', color: 0xff5ce1, label: 'JFK', bbox: { minLon: -73.90, maxLon: -73.75, minLat: 40.60, maxLat: 40.67 }, minPoints: 300 });
+  await addGeoLandmark(group, { url: 'src/geo/airports.geojson', name: 'LaGuardia Airport', color: 0xff9f43, label: 'LaGuardia', bbox: { minLon: -73.92, maxLon: -73.84, minLat: 40.75, maxLat: 40.78 }, minPoints: 150 });
+  // Plot poly boundary if present
+  await addPolyOutline(group, 'src/geo/new-york.poly');
+  scene.add(group); return group;
 }

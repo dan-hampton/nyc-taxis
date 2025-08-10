@@ -18,7 +18,6 @@ export class Simulation {
     const mapGroup = scene.getObjectByName('NYCMap');
     this.router = mapGroup && mapGroup.userData.roadRouter ? mapGroup.userData.roadRouter : null;
   }
-
   resetTo(timeSec) {
     this.simulationTime = timeSec;
     // Reset active orbs
@@ -45,6 +44,11 @@ export class Simulation {
     if (this.playing) {
       this.simulationTime += dt * this.speed;
       if (this.simulationTime > 86400) this.simulationTime -= 86400; // loop day
+    }
+    // Debug: log active orbs every ~1s (remove later)
+    if (!this._dbgLast || performance.now() - this._dbgLast > 1000) {
+      this._dbgLast = performance.now();
+      // console.debug('Active orbs:', this.activeOrbs.length);
     }
 
     // Activate new trips
@@ -79,50 +83,44 @@ export class Simulation {
 
       const now = performance.now();
       const base = orb.userData.baseScale || 0.5;
-
-      // Start pulse: expand + brighten for first N ms
-      if (orb.userData.startEffectStart) {
-        const t = (now - orb.userData.startEffectStart) / orb.userData.startEffectDuration;
-        if (t < 1) {
-          const ease = 1 - Math.pow(1 - t, 3); // easeOutCubic
-          const extra = (1 + Math.sin(t * Math.PI)) * 0.35 * (1 - t);
-          const scalePulse = base * (1 + extra);
-          orb.scale.setScalar(scalePulse);
-          // Temporarily ramp opacity
-          orb.material.opacity = 0.9 - 0.25 * t;
-        } else {
-          orb.userData.startEffectStart = null; // finished
-          orb.material.opacity = 0.65;
-        }
-      }
-
-      // Finish pulse trigger when within last 6% of time and not yet started
+      const eff = orb.userData.effect;
       const remaining = 1 - progress;
-      if (!orb.userData.finishing && remaining < 0.06) {
-        orb.userData.finishing = true;
-        orb.userData.finishEffectStart = now;
-      }
-
-      if (orb.userData.finishing && orb.userData.finishEffectStart) {
-        const t = (now - orb.userData.finishEffectStart) / orb.userData.finishEffectDuration;
-        if (t < 1) {
-          const easeIn = t * t;
-          // Grow then shrink
-          const grow = Math.sin(t * Math.PI);
-          orb.scale.setScalar(base * (1.0 + grow * 0.6));
-          // Fade out
-          orb.material.opacity = THREE.MathUtils.lerp(0.65, 0.0, easeIn);
-        } else {
-          // Mark trip complete next loop by forcing progress >=1
-          // (Leave as very low opacity until removal)
-          orb.material.opacity = 0.0;
-        }
-      }
-
-      // Idle subtle pulse if no special effect active
-      if (!orb.userData.startEffectStart && !orb.userData.finishing) {
-        const pulse = 1 + Math.sin(now * 0.0035 + base) * 0.04;
+      if (!eff) {
+        // Fallback subtle pulse
+        const pulse = 1 + Math.sin(now * 0.003) * 0.05;
         orb.scale.setScalar(base * pulse);
+      } else {
+        const phase = eff.phase;
+        if (phase === 'start') {
+          const t = (now - eff.startTime) / eff.startDuration;
+          if (t < 1) {
+            const scale = base * (1.6 - 0.6 * t); // 1.6x down to base
+            orb.scale.setScalar(scale);
+            orb.material.opacity = 0.95 - 0.25 * t;
+          } else {
+            eff.phase = 'idle';
+            orb.scale.setScalar(base);
+            orb.material.opacity = 0.70;
+            eff.idleStart = now;
+          }
+        } else if (phase === 'idle') {
+          const t = (now - (eff.idleStart||eff.startTime)) * 0.0025;
+            const pulse = 1 + Math.sin(t) * 0.04;
+            orb.scale.setScalar(base * pulse);
+            if (remaining < 0.05) {
+              eff.phase = 'finish';
+              eff.finishStart = now;
+            }
+        } else if (phase === 'finish') {
+          const t = (now - eff.finishStart) / eff.finishDuration;
+          if (t < 1) {
+            const scale = base * (1 + t * 1.4); // grow to 2.4x
+            orb.scale.setScalar(scale);
+            orb.material.opacity = 0.70 * (1 - t);
+          } else {
+            orb.material.opacity = 0.0;
+          }
+        }
       }
     }
   }

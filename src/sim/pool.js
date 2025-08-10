@@ -22,15 +22,40 @@ export function activateOrb(orb, trip, color) {
   orb.userData.baseScale = s;
   orb.scale.setScalar(s);
   orb.material.color.set(color);
-  orb.material.opacity = 0.65;
-  // Start effect metadata
+  orb.material.opacity = 0.70;
+  // Effect state
   const now = performance.now();
-  orb.userData.startEffectStart = now;
-  orb.userData.startEffectDuration = 800; // ms
-  orb.userData.finishing = false;
-  orb.userData.finishEffectStart = null;
-  orb.userData.finishEffectDuration = 700; // ms
-  orb.userData.originalColor = orb.material.color.clone();
+  orb.userData.effect = {
+    phase: 'start', // 'start' | 'idle' | 'finish'
+    startTime: now,
+    startDuration: 650, // ms
+    finishDuration: 600,
+    finished: false
+  };
+  // Lazy sprite flare (billboard) for pulses
+  if (!orb.userData.flare) {
+    const texSize = 64;
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = texSize;
+    const ctx = canvas.getContext('2d');
+    const grd = ctx.createRadialGradient(texSize/2, texSize/2, 0, texSize/2, texSize/2, texSize/2);
+    grd.addColorStop(0,'rgba(255,255,255,1)');
+    grd.addColorStop(0.25,'rgba(255,255,255,0.85)');
+    grd.addColorStop(0.6,'rgba(255,255,255,0.15)');
+    grd.addColorStop(1,'rgba(255,255,255,0)');
+    ctx.fillStyle = grd; ctx.fillRect(0,0,texSize,texSize);
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.minFilter = THREE.LinearFilter; tex.magFilter = THREE.LinearFilter;
+    const sm = new THREE.SpriteMaterial({ map: tex, color: color, transparent: true, opacity: 0.0, depthWrite: false, blending: THREE.AdditiveBlending });
+    const sprite = new THREE.Sprite(sm);
+    sprite.scale.setScalar(s * 4); // big at peak, animated down
+    sprite.position.set(0,0,0);
+    orb.add(sprite);
+    orb.userData.flare = sprite;
+  }
+  const flare = orb.userData.flare;
+  flare.material.color.set(color);
+  flare.material.opacity = 0.0; // will animate in update
 }
 
 export function deactivateOrb(orb) {

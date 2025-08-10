@@ -21,14 +21,14 @@ const scene = new THREE.Scene();
 scene.background = new THREE.Color('#00000a');
 
 const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.1, 2000);
-camera.position.set(120, 180, 260);
+camera.position.set(40, 60, 40);
 
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 controls.dampingFactor = 0.06;
 controls.maxPolarAngle = Math.PI * 0.495;
-controls.minDistance = 30;
-controls.maxDistance = 550;
+controls.minDistance = 15;
+controls.maxDistance = 300;
 controls.target.set(0, 0, 0);
 controls.update();
 
@@ -133,12 +133,46 @@ window.addEventListener('resize', () => {
 });
 
 async function init() {
-  mapGroup = await loadNYCMap(scene);
-  const trips = await loadTrips();
-  const pool = createPool(700);
-  pool.forEach(o => scene.add(o));
-  simulation = new Simulation(scene, pool, trips);
-  simulation.resetTo(0);
+  const statusId = 'init-status';
+  let statusEl = document.getElementById(statusId);
+  if (!statusEl) {
+    statusEl = document.createElement('div');
+    statusEl.id = statusId;
+    statusEl.style.position='absolute';
+    statusEl.style.top='8px';
+    statusEl.style.right='12px';
+    statusEl.style.padding='4px 8px';
+    statusEl.style.background='rgba(0,0,0,0.55)';
+    statusEl.style.font='12px/1.2 monospace';
+    statusEl.style.color='#8ff';
+    statusEl.style.zIndex='20';
+    document.body.appendChild(statusEl);
+  }
+  const setStatus = (m) => { statusEl.textContent = m; };
+  try {
+    setStatus('Loading map...');
+    mapGroup = await loadNYCMap(scene);
+    setStatus('Loading trips...');
+    let trips = [];
+    try {
+      trips = await loadTrips();
+    } catch (e) {
+      console.error('Trip load failed:', e);
+      setStatus('Trip load failed; using empty set');
+      trips = [];
+    }
+    setStatus('Allocating pool...');
+    const pool = createPool(700);
+    pool.forEach(o => scene.add(o));
+    setStatus('Starting simulation...');
+    simulation = new Simulation(scene, pool, trips);
+    simulation.resetTo(0);
+    setStatus('Simulation running');
+    setTimeout(()=>statusEl.remove(), 4000);
+  } catch (e) {
+    console.error('Init failed', e);
+    setStatus('Init error: ' + e.message);
+  }
 }
 
 let last = performance.now();
@@ -155,7 +189,7 @@ function animate() {
   // if (mapGroup && mapGroup.userData.heat) { mapGroup.userData.heat.update(simulation.activeOrbs); }
   }
 
-  // Hover detection
+  // Hover detection (respect ongoing start/finish effects)
   if (simulation) {
     raycaster.setFromCamera(mouse, camera);
     const intersects = raycaster.intersectObjects(simulation.activeOrbs, false);
@@ -163,15 +197,27 @@ function animate() {
       const first = intersects[0].object;
       if (hoverOrb !== first) {
         if (hoverOrb) {
-          hoverOrb.scale.setScalar(hoverOrb.userData.baseScale);
+          // Only reset scale if no special effects active
+          if (!hoverOrb.userData.startEffectStart && !hoverOrb.userData.finishing) {
+            hoverOrb.scale.setScalar(hoverOrb.userData.baseScale);
+          }
         }
         hoverOrb = first;
-        hoverOrb.scale.setScalar(hoverOrb.userData.baseScale * hoverScaleBoost);
+        // Only apply hover if no special effects active
+        if (!hoverOrb.userData.startEffectStart && !hoverOrb.userData.finishing) {
+          hoverOrb.scale.setScalar(hoverOrb.userData.baseScale * hoverScaleBoost);
+        }
       } else {
-        hoverOrb.scale.setScalar(hoverOrb.userData.baseScale * hoverScaleBoost);
+        // Only apply hover if no special effects active
+        if (!hoverOrb.userData.startEffectStart && !hoverOrb.userData.finishing) {
+          hoverOrb.scale.setScalar(hoverOrb.userData.baseScale * hoverScaleBoost);
+        }
       }
     } else if (hoverOrb) {
-      hoverOrb.scale.setScalar(hoverOrb.userData.baseScale);
+      // Only reset scale if no special effects active
+      if (!hoverOrb.userData.startEffectStart && !hoverOrb.userData.finishing) {
+        hoverOrb.scale.setScalar(hoverOrb.userData.baseScale);
+      }
       hoverOrb = null;
     }
   }

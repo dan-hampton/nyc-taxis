@@ -4,6 +4,9 @@ body { overflow: hidden; }
 #bg { position:fixed; inset:0; width:100%; height:100%; display:block; }
 #hud { position:fixed; top:0.75rem; left:0.75rem; display:flex; flex-direction:column; gap:0.5rem; z-index:10; font-size:0.85rem; backdrop-filter: blur(8px); background:rgba(10,16,32,0.42); padding:0.75rem 1rem; border:1px solid rgba(80,128,255,0.25); border-radius:12px; box-shadow:0 0 16px -4px rgba(0,128,255,0.35), 0 0 60px -20px rgba(0,255,255,0.3) inset; }
 #clock { font-size:1.25rem; font-weight:600; letter-spacing:0.05em; text-shadow:0 0 8px #3af2ff, 0 0 16px #0077ff; }
+#tripCounter { font-size:0.8rem; letter-spacing:0.08em; font-weight:500; opacity:0.92; background:rgba(0,32,64,0.3); padding:0.32rem 0.7rem; border:1px solid rgba(80,128,255,0.25); border-radius:6px; align-self:flex-start; display:flex; gap:0.7em; flex-wrap:wrap; align-items:center; }
+.counter-label { color:#7ef; font-weight:700; margin-right:0.18em; text-transform:uppercase; font-size:0.8em; letter-spacing:0.09em; }
+.counter-value { color:#fff; font-weight:700; min-width:2em; display:inline-block; text-align:right; font-size:1em; }
 #controls { display:flex; align-items:center; gap:0.5rem; flex-wrap:wrap; }
 #controls label { font-weight:500; }
 #controls input[type=range] { width:240px; accent-color:#19c3ff; }

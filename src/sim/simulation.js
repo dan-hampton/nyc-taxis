@@ -12,6 +12,12 @@ export class Simulation {
     this.speed = 60; // seconds simulated per real second
     this.nextTripIndex = 0;
     this.activeOrbs = [];
+  // Trail management
+  this.trailsGroup = new THREE.Group();
+  this.trailsGroup.name = 'Trails';
+  this.scene.add(this.trailsGroup);
+  this.activeTrails = []; // trail lines (including fading ones)
+  this.trailMarkerStyle = 'circle'; // 'circle' | 'pin'
   // Auto fast-forward if there's a gap larger than this (in sim seconds)
   // AND there are no currently active trips. This keeps the visualization
   // lively by skipping dead air periods in the sparse sample dataset.
@@ -28,6 +34,16 @@ export class Simulation {
     // Reset active orbs
     for (const orb of this.activeOrbs) deactivateOrb(orb);
     this.activeOrbs.length = 0;
+    // Remove existing trails
+    for (const trail of this.activeTrails) {
+      if (trail.parent) trail.parent.remove(trail);
+      if (trail.geometry) trail.geometry.dispose();
+      if (trail.material) trail.material.dispose();
+      if (trail.userData && trail.userData.marker) {
+        this.disposeMarker(trail.userData.marker);
+      }
+    }
+    this.activeTrails.length = 0;
     // Find first trip index >= time
     this.nextTripIndex = this.trips.findIndex(t => t.startTime >= timeSec);
     if (this.nextTripIndex < 0) this.nextTripIndex = this.trips.length;
@@ -39,6 +55,10 @@ export class Simulation {
   const color = trip.vendor === 1 ? 0xfff15c : 0x27ff6c;
   this.prepareTripPath(trip);
   activateOrb(orb, trip, color);
+      // Create trail and set to current progress
+      const trail = this.createTrailForTrip(trip, color);
+      const progress = (timeSec - trip.startTime) / (trip.endTime - trip.startTime);
+      this.updateTrailProgress(trail, THREE.MathUtils.clamp(progress, 0, 1));
       // Set position along curve
       this.positionOrb(orb, trip, (timeSec - trip.startTime) / (trip.endTime - trip.startTime));
       this.activeOrbs.push(orb);
@@ -65,6 +85,8 @@ export class Simulation {
   const color = trip.vendor === 1 ? 0xfff15c : 0x27ff6c;
   this.prepareTripPath(trip);
   activateOrb(orb, trip, color);
+  // Trail line
+  const trail = this.createTrailForTrip(trip, color);
       // Create destination label sprite (simple lat/lon for now; could plug reverse geocode)
       if (!orb.userData.label) {
         let textLabel;
@@ -103,11 +125,19 @@ export class Simulation {
         // ensure finish effect ran; now deactivate
         deactivateOrb(orb);
         this.activeOrbs.splice(i,1);
+        // Begin trail fade (if exists)
+        if (trip._trail && !trip._trail.userData.fading) {
+          trip._trail.userData.fading = true;
+          trip._trail.userData.fadeStart = performance.now();
+          trip._trail.userData.fadeDuration = 1500; // ms
+        }
         continue;
       }
 
       // Position along path
       this.positionOrb(orb, trip, THREE.MathUtils.clamp(progress, 0, 1));
+      // Update trail draw progress
+      if (trip._trail) this.updateTrailProgress(trip._trail, THREE.MathUtils.clamp(progress, 0, 1));
 
       const now = performance.now();
       const base = orb.userData.baseScale || 0.5;
@@ -168,11 +198,144 @@ export class Simulation {
           const color = trip.vendor === 1 ? 0xfff15c : 0x27ff6c;
           this.prepareTripPath(trip);
           activateOrb(orb, trip, color);
+          const trail = this.createTrailForTrip(trip, color);
           this.activeOrbs.push(orb);
           this.nextTripIndex++;
         }
       }
     }
+
+    // Update fading trails (opacity & disposal)
+    for (let i = this.activeTrails.length - 1; i >= 0; i--) {
+      const trail = this.activeTrails[i];
+      if (trail.userData.fading) {
+        const now = performance.now();
+        const t = (now - trail.userData.fadeStart) / trail.userData.fadeDuration;
+        if (t < 1) {
+          const ease = 1 - Math.pow(1 - t, 3);
+          trail.material.opacity = trail.userData.baseOpacity * (1 - ease);
+        } else {
+          // remove & dispose
+          if (trail.parent) trail.parent.remove(trail);
+          if (trail.geometry) trail.geometry.dispose();
+          if (trail.material) trail.material.dispose();
+          if (trail.userData && trail.userData.marker) this.disposeMarker(trail.userData.marker);
+          this.activeTrails.splice(i,1);
+        }
+      }
+    }
+  }
+
+  createTrailForTrip(trip, color) {
+    this.prepareTripPath(trip);
+    if (!trip._path || trip._path.length < 2) return null;
+    // Geometry with full set of vertices copied; we will reveal over time by adjusting drawRange and a temporary vertex.
+    const pts = trip._path;
+    const vertCount = pts.length;
+    const positions = new Float32Array(vertCount * 3);
+    for (let i=0;i<vertCount;i++) {
+      positions[i*3] = pts[i].x; positions[i*3+1] = 0.03; positions[i*3+2] = pts[i].z;
+    }
+    const origPositions = positions.slice(); // keep original to restore after segment passes
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geo.setDrawRange(0, 2); // start with first segment
+    const mat = new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.38, depthWrite: false });
+    const line = new THREE.Line(geo, mat);
+    line.userData = {
+      trip,
+      origPositions,
+      fading: false,
+      baseOpacity: 0.38,
+      marker: null
+    };
+    this.trailsGroup.add(line);
+    // Add start marker if desired
+    const start = pts[0];
+    const marker = this.createStartMarker(this.trailMarkerStyle, color, start);
+    if (marker) { line.add(marker); line.userData.marker = marker; }
+    trip._trail = line;
+    this.activeTrails.push(line);
+    return line;
+  }
+
+  updateTrailProgress(trail, t) {
+    if (!trail) return;
+    const trip = trail.userData.trip;
+    if (!trip || !trip._path) return;
+    const geo = trail.geometry;
+    const positions = geo.getAttribute('position').array;
+    const origPositions = trail.userData.origPositions;
+    const segLengths = trip._segLengths;
+    const total = trip._totalLength || 1;
+    const targetDist = t * total;
+    let acc = 0;
+    for (let i=0;i<segLengths.length;i++) {
+      const segLen = segLengths[i];
+      if (acc + segLen >= targetDist) {
+        // Completed segments before i restore originals
+        for (let j=0;j<=i;j++) {
+          positions[j*3] = origPositions[j*3];
+          positions[j*3+1] = origPositions[j*3+1];
+          positions[j*3+2] = origPositions[j*3+2];
+        }
+        const localT = (targetDist - acc) / segLen;
+        // Interpolate for vertex i+1
+        const ax = origPositions[i*3], ay = origPositions[i*3+1], az = origPositions[i*3+2];
+        const bx = origPositions[(i+1)*3], by = origPositions[(i+1)*3+1], bz = origPositions[(i+1)*3+2];
+        positions[(i+1)*3] = ax + (bx - ax) * localT;
+        positions[(i+1)*3+1] = ay + (by - ay) * localT;
+        positions[(i+1)*3+2] = az + (bz - az) * localT;
+        geo.setDrawRange(0, i + 2); // vertices count
+        geo.attributes.position.needsUpdate = true;
+        return;
+      }
+      acc += segLen;
+    }
+    // Completed entire path
+    geo.setDrawRange(0, (trip._path.length));
+    // Restore all originals
+    for (let k=0;k<origPositions.length;k++) positions[k] = origPositions[k];
+    geo.attributes.position.needsUpdate = true;
+  }
+
+  createStartMarker(style, color, position) {
+    if (!style) return null;
+    if (style === 'circle') {
+      const g = new THREE.CircleGeometry(0.1, 24);
+      const m = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.35, depthWrite: false });
+      const mesh = new THREE.Mesh(g, m);
+      mesh.rotation.x = -Math.PI/2;
+      mesh.position.set(position.x, 0.015, position.z);
+      mesh.userData.isTrailMarker = true;
+      mesh.userData.materials = [m];
+      return mesh;
+    } else if (style === 'pin') {
+      const grp = new THREE.Group();
+      const shaftG = new THREE.ConeGeometry(0.25, 0.7, 16);
+      const headG = new THREE.SphereGeometry(0.22, 16, 12);
+      const mat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.75, depthWrite: false });
+      const cone = new THREE.Mesh(shaftG, mat);
+      cone.rotation.x = Math.PI; // point down
+      cone.position.y = 0.35;
+      const head = new THREE.Mesh(headG, mat);
+      head.position.y = 0.7;
+      grp.add(cone); grp.add(head);
+      grp.position.set(position.x, 0.02, position.z);
+      grp.scale.setScalar(0.85);
+      grp.userData.isTrailMarker = true;
+      grp.userData.materials = [mat];
+      return grp;
+    }
+    return null;
+  }
+
+  disposeMarker(marker) {
+    if (!marker) return;
+    if (marker.userData && marker.userData.materials) {
+      for (const mat of marker.userData.materials) { if (mat) mat.dispose(); }
+    }
+    if (marker.geometry) marker.geometry.dispose();
   }
 
   prepareTripPath(trip) {

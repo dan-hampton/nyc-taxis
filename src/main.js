@@ -57,6 +57,10 @@ composer.addPass(new ShaderPass(VignetteShader));
 
 // HUD elements
 const clockEl = document.getElementById('clock');
+const tripCounterEl = document.getElementById('tripCounter');
+const tripsStartedEl = document.getElementById('tripsStarted');
+const tripsActiveEl = document.getElementById('tripsActive');
+const tripsCompletedEl = document.getElementById('tripsCompleted');
 const slider = document.getElementById('timeline');
 const playPauseBtn = document.getElementById('playPause');
 const speedSel = document.getElementById('speed');
@@ -64,6 +68,8 @@ const tooltip = document.getElementById('tooltip');
 
 let simulation; // will hold Simulation instance
 let mapGroup; // reference to NYCMap group for heat layer
+let tripsCompleted = 0;
+let lastActiveIds = new Set();
 
 function formatTime(sec) {
   sec = Math.max(0, Math.floor(sec) % 86400);
@@ -217,6 +223,24 @@ function animate() {
     }
     clockEl.textContent = dateStr ? `${dateStr} ${formatTime(simulation.simulationTime)}` : formatTime(simulation.simulationTime);
     slider.value = Math.floor(simulation.simulationTime);
+
+    // --- Trip counter logic ---
+    // Track active trip IDs
+    const activeIds = new Set();
+    for (const orb of simulation.activeOrbs) {
+      if (orb.userData.trip && orb.userData.trip.id !== undefined) {
+        activeIds.add(orb.userData.trip.id);
+      }
+    }
+    // Increment tripsCompleted for trips that were active but now are not
+    for (const id of lastActiveIds) {
+      if (!activeIds.has(id)) tripsCompleted++;
+    }
+    lastActiveIds = activeIds;
+
+    // Update GUI
+    if (tripsActiveEl) tripsActiveEl.textContent = activeIds.size;
+    if (tripsCompletedEl) tripsCompletedEl.textContent = tripsCompleted;
   // Heatmap update disabled (trails off)
   // if (mapGroup && mapGroup.userData.heat) { mapGroup.userData.heat.update(simulation.activeOrbs); }
   }

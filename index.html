@@ -21,6 +21,14 @@
   <canvas id="bg"></canvas>
   <div id="hud">
     <div id="clock">00:00:00</div>
+    <div id="tripCounter" aria-live="polite">
+      <span class="counter-label">TRIPS:</span>
+      <span class="counter-label">ACTIVE</span>
+      <span id="tripsActive" class="counter-value">0</span>
+      <span style="margin-left:1.0em"></span>
+      <span class="counter-label">TAKEN</span>
+      <span id="tripsCompleted" class="counter-value">0</span>
+    </div>
     <div id="controls">
       <label for="timeline">Time</label>
       <input id="timeline" type="range" min="0" max="86400" value="0" step="1" />

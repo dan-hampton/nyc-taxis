@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1" />
+  <title>NYC Taxi Flux</title>
+  <link rel="preconnect" href="https://unpkg.com" />
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="preload" as="fetch" href="src/geo/subset.csv" crossorigin>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='30' fill='%23000' stroke='%2300d1ff' stroke-width='4'/%3E%3Cpath d='M18 40 L32 16 L46 40 L32 34 Z' fill='%2300d1ff'/%3E%3C/svg%3E">
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.165/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.165/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+  <canvas id="bg"></canvas>
+  <div id="hud">
+    <div id="clock">00:00:00</div>
+    <div id="controls">
+      <label for="timeline">Time</label>
+      <input id="timeline" type="range" min="0" max="86400" value="0" step="1" />
+      <button id="playPause" aria-pressed="true">Pause</button>
+      <select id="speed">
+        <option value="30">30x</option>
+        <option value="60" selected>60x</option>
+        <option value="120">120x</option>
+        <option value="300">300x</option>
+      </select>
+    </div>
+  </div>
+  <div id="tooltip" hidden></div>
+  <noscript>This experience requires JavaScript.</noscript>
+  <script type="module" src="src/main.js"></script>
+</body>
+</html>

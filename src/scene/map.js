@@ -215,8 +215,8 @@ function drawPoly(rings, group, lineMat, fillMat) {
 }
 
 async function buildRoads(group) {
-  const roadFiles = ['src/geo/roads-simplified.geojson','src/geo/roads-simplified1.geojson','src/geo/roads-simplified2.geojson','src/geo/roads-simplified3.geojson'];
-  const matPrimary = new THREE.LineBasicMaterial({ color: 0x148aff, transparent: true, opacity: 0.42 });
+  const roadFiles = ['src/geo/roads-simplified1.geojson','src/geo/roads-simplified2.geojson','src/geo/roads-simplified3.geojson'];
+  const matPrimary = new THREE.LineBasicMaterial({ color: 0x148aff, transparent: true, opacity: 0.52 });
   const matMinor = new THREE.LineBasicMaterial({ color: 0x0da0ff, transparent: true, opacity: 0.22 });
   const roadGroup = new THREE.Group();
   roadGroup.name = 'RoadLayer';
@@ -235,7 +235,7 @@ async function buildRoads(group) {
   const geom = f.geometry;
         if (!geom) continue;
         const highway = (f.properties && f.properties.highway) || '';
-        if (!/motorway|trunk|primary|secondary|tertiary|residential|unclassified|service/.test(highway)) continue;
+        if (!/motorway|trunk|primary|secondary|tertiary|unclassified|service/.test(highway)) continue; //residential removed
         const major = /motorway|trunk|primary|secondary/.test(highway);
   const roadName = (f.properties && f.properties.name) || '';
         // Helper to test if any coord inside bbox

@@ -7,9 +7,30 @@ export class Simulation {
     this.scene = scene;
     this.pool = pool;
     this.trips = trips;
-    this.simulationTime = 0;
+    // Start simulation at the first trip's start time, if available
+    if (trips && trips.length) {
+      this.simulationTime = trips[0].startTime;
+    } else {
+      this.simulationTime = 0;
+    }
     this.playing = true;
-    this.speed = 60; // seconds simulated per real second
+    this.speed = 30; // seconds simulated per real second
+  this.userSpeed = this.speed; // base user-selected speed
+  this.gapAccelActive = false;
+  // Trip lifecycle counters (robust against trips that start & finish within one frame)
+  this.startedCount = 0;
+  this.completedCount = 0;
+  
+  // Adaptive gap acceleration system
+  this.maxRealWaitTime = 5.0; // max seconds user should wait in real time
+  this.moderateGapSpeed = 1000; // speed for gaps that would take 5+ seconds at normal speed
+  this.extremeGapSpeed = 10000; // speed for multi-day gaps
+  this.lastGapCheck = 0;
+  this.gapCheckInterval = 0.5; // check every 0.5 real seconds
+  
+  // Configuration for different gap types
+  this.shortGapThreshold = 300; // gaps under 5 minutes (300 sec) use moderate acceleration
+  this.longGapThreshold = 3600; // gaps over 1 hour (3600 sec) use extreme acceleration
     this.nextTripIndex = 0;
     this.activeOrbs = [];
   // Trail management
@@ -18,19 +39,46 @@ export class Simulation {
   this.scene.add(this.trailsGroup);
   this.activeTrails = []; // trail lines (including fading ones)
   this.trailMarkerStyle = 'circle'; // 'circle' | 'pin'
-  // Auto fast-forward if there's a gap larger than this (in sim seconds)
-  // AND there are no currently active trips. This keeps the visualization
-  // lively by skipping dead air periods in the sparse sample dataset.
-  this.fastForwardGap = 5; // configurable; user-facing control could be added later
     this.tmpV1 = new THREE.Vector3();
     this.tmpV2 = new THREE.Vector3();
     this.tmpCtrl = new THREE.Vector3();
     // Road router (if map loaded) - lazy lookup
     const mapGroup = scene.getObjectByName('NYCMap');
     this.router = mapGroup && mapGroup.userData.roadRouter ? mapGroup.userData.roadRouter : null;
+    // Track current simulation day (ms epoch of midnight)
+    if (this.trips && this.trips.length) {
+      const d0 = new Date(this.trips[0].pickupDate);
+      d0.setHours(0,0,0,0);
+      this.currentDayStart = d0.getTime();
+    } else {
+      this.currentDayStart = null;
+    }
   }
   resetTo(timeSec) {
+    // Prevent simulation from resetting before first trip
+    if (this.trips && this.trips.length) {
+      const minTime = this.trips[0].startTime;
+      if (timeSec < minTime) timeSec = minTime;
+    }
     this.simulationTime = timeSec;
+  this.gapAccelActive = false;
+  this.speed = this.userSpeed;
+  // Recompute counters relative to new time (treat trips with startTime < timeSec as started; endTime <= timeSec as completed)
+  if (this.trips && this.trips.length) {
+    let started = 0, completed = 0;
+    for (const t of this.trips) {
+      if (t.startTime < timeSec) started++;
+      if (t.endTime <= timeSec) completed++;
+      // Clear per-run markers; they'll be set again as trips launch
+      t._started = t.startTime < timeSec;
+      t._completed = t.endTime <= timeSec;
+    }
+    this.startedCount = started;
+    this.completedCount = completed;
+  } else {
+    this.startedCount = 0;
+    this.completedCount = 0;
+  }
     // Reset active orbs
     for (const orb of this.activeOrbs) deactivateOrb(orb);
     this.activeOrbs.length = 0;
@@ -65,23 +113,32 @@ export class Simulation {
     }
   }
 
-  update(dt) {
+ update(dt) {
     if (this.playing) {
       this.simulationTime += dt * this.speed;
-      if (this.simulationTime > 86400) this.simulationTime -= 86400; // loop day
-    }
-    // Debug: log active orbs every ~1s (remove later)
-    if (!this._dbgLast || performance.now() - this._dbgLast > 1000) {
-      this._dbgLast = performance.now();
-      // console.debug('Active orbs:', this.activeOrbs.length);
+      // Stop at the last trip's end time
+      if (this.trips && this.trips.length) {
+        const maxTime = this.trips[this.trips.length-1].endTime;
+        if (this.simulationTime >= maxTime) {
+          this.simulationTime = maxTime;
+          this.playing = false;
+        }
+      }
     }
 
     // Activate new trips
     while (this.nextTripIndex < this.trips.length) {
       const trip = this.trips[this.nextTripIndex];
       if (trip.startTime > this.simulationTime) break;
+      // If the trip has already ended by current simulationTime, fast-forward counters without spawning an orb
+      if (trip.endTime <= this.simulationTime) {
+        if (!trip._started) { trip._started = true; this.startedCount++; }
+        if (!trip._completed) { trip._completed = true; this.completedCount++; }
+        this.nextTripIndex++;
+        continue;
+      }
       const orb = this.pool.find(o => !o.userData.active);
-      if (!orb) break; // pool exhausted
+  if (!orb) return; // pool exhausted, try again next frame
   const color = trip.vendor === 1 ? 0xfff15c : 0x27ff6c;
   this.prepareTripPath(trip);
   activateOrb(orb, trip, color);
@@ -110,6 +167,7 @@ export class Simulation {
         orb.add(label);
         orb.userData.label = label;
       }
+  if (!trip._started) { trip._started = true; this.startedCount++; }
       this.activeOrbs.push(orb);
       this.nextTripIndex++;
     }
@@ -125,6 +183,7 @@ export class Simulation {
         // ensure finish effect ran; now deactivate
         deactivateOrb(orb);
         this.activeOrbs.splice(i,1);
+  if (trip && !trip._completed) { trip._completed = true; this.completedCount++; }
         // Begin trail fade (if exists)
         if (trip._trail && !trip._trail.userData.fading) {
           trip._trail.userData.fading = true;
@@ -182,28 +241,8 @@ export class Simulation {
       }
     }
 
-    // If playing, and there are no active trips, and the next trip is sufficiently far in the future,
-    // jump time forward to its start so user doesn't wait through empty gaps.
-    if (this.playing && this.activeOrbs.length === 0 && this.nextTripIndex < this.trips.length) {
-      const nextTrip = this.trips[this.nextTripIndex];
-      const gap = nextTrip.startTime - this.simulationTime;
-      if (gap > this.fastForwardGap) {
-        this.simulationTime = nextTrip.startTime;
-        // Activate any trips starting at this new time (multiple may share the timestamp)
-        while (this.nextTripIndex < this.trips.length) {
-          const trip = this.trips[this.nextTripIndex];
-          if (trip.startTime > this.simulationTime) break;
-          const orb = this.pool.find(o => !o.userData.active);
-          if (!orb) break; // pool exhausted
-          const color = trip.vendor === 1 ? 0xfff15c : 0x27ff6c;
-          this.prepareTripPath(trip);
-          activateOrb(orb, trip, color);
-          const trail = this.createTrailForTrip(trip, color);
-          this.activeOrbs.push(orb);
-          this.nextTripIndex++;
-        }
-      }
-    }
+    // Adaptive gap acceleration system
+    this.updateGapAcceleration(dt);
 
     // Update fading trails (opacity & disposal)
     for (let i = this.activeTrails.length - 1; i >= 0; i--) {
@@ -240,7 +279,7 @@ export class Simulation {
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
     geo.setDrawRange(0, 2); // start with first segment
-    const mat = new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.38, depthWrite: false });
+    const mat = new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.42, depthWrite: false });
     const line = new THREE.Line(geo, mat);
     line.userData = {
       trip,
@@ -385,4 +424,94 @@ export class Simulation {
     orb.position.copy(last);
     orb.position.y = 0.12;
   }
+
+  /**
+   * Adaptive gap acceleration system that smoothly scales speed based on gap duration
+   * and real-world wait time, avoiding jarring jumps while keeping the simulation engaging.
+   */
+  updateGapAcceleration(dt) {
+    if (!this.playing) return;
+
+    // Only check periodically to avoid excessive computation
+    const now = performance.now() / 1000;
+    if (now - this.lastGapCheck < this.gapCheckInterval) return;
+    this.lastGapCheck = now;
+
+    // If there are active trips, ensure we're at normal speed
+    if (this.activeOrbs.length > 0) {
+      if (this.gapAccelActive) {
+        this.gapAccelActive = false;
+        this.speed = this.userSpeed;
+      }
+      return;
+    }
+
+    // No active trips - check if we need gap acceleration
+    if (this.nextTripIndex >= this.trips.length) {
+      // No more trips, maintain current speed
+      return;
+    }
+
+    const nextTrip = this.trips[this.nextTripIndex];
+    const gapDuration = nextTrip.startTime - this.simulationTime;
+    
+    // Handle day transitions
+    if (gapDuration < 0) {
+      // Next trip is tomorrow, calculate actual gap including day boundary
+      const realGap = (86400 - this.simulationTime) + nextTrip.startTime;
+      this.handleGapAcceleration(realGap, true);
+    } else {
+      this.handleGapAcceleration(gapDuration, false);
+    }
+  }
+
+  handleGapAcceleration(gapDuration, isDayTransition) {
+    // Calculate how long this gap would take at current user speed (in real seconds)
+    const realTimeAtUserSpeed = gapDuration / this.userSpeed;
+
+    if (realTimeAtUserSpeed <= this.maxRealWaitTime) {
+      // Gap is short enough at normal speed, no acceleration needed
+      if (this.gapAccelActive) {
+        this.gapAccelActive = false;
+        this.speed = this.userSpeed;
+      }
+      return;
+    }
+
+    // Gap is too long, activate acceleration
+    this.gapAccelActive = true;
+
+    let targetSpeed;
+
+    if (isDayTransition || gapDuration > this.longGapThreshold) {
+      // Multi-day or long gaps: use extreme speed
+      targetSpeed = this.extremeGapSpeed;
+    } else if (gapDuration > this.shortGapThreshold) {
+      // Medium gaps: use moderate speed
+      targetSpeed = this.moderateGapSpeed;
+    } else {
+      // Short gaps: calculate adaptive speed to complete in maxRealWaitTime
+      targetSpeed = Math.max(
+        this.userSpeed,
+        Math.min(
+          this.moderateGapSpeed,
+          gapDuration / this.maxRealWaitTime
+        )
+      );
+    }
+    
+    // Smooth speed transitions to avoid jarring changes
+    const speedDiff = targetSpeed - this.speed;
+    const maxSpeedChangePerCheck = this.userSpeed * 10; // Allow faster transitions
+    
+    if (Math.abs(speedDiff) > maxSpeedChangePerCheck) {
+      this.speed += Math.sign(speedDiff) * maxSpeedChangePerCheck;
+    } else {
+      this.speed = targetSpeed;
+    }
+
+    // Ensure speed stays within reasonable bounds
+    this.speed = Math.max(this.userSpeed, Math.min(this.extremeGapSpeed, this.speed));
+  }
 }
+

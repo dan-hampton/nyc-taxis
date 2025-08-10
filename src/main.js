@@ -21,7 +21,7 @@ const scene = new THREE.Scene();
 scene.background = new THREE.Color('#00000a');
 
 const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.1, 2000);
-camera.position.set(40, 60, 40);
+camera.position.set(1.77, 25.49, -10.27);
 
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
@@ -29,7 +29,7 @@ controls.dampingFactor = 0.06;
 controls.maxPolarAngle = Math.PI * 0.495;
 controls.minDistance = 15;
 controls.maxDistance = 300;
-controls.target.set(0, 0, 0);
+controls.target.set(-1.34, 0.17, -12.09);
 controls.update();
 
 // Ambient feel
@@ -57,6 +57,8 @@ composer.addPass(new ShaderPass(VignetteShader));
 
 // HUD elements
 const clockEl = document.getElementById('clock');
+const speedIndicatorEl = document.getElementById('speedIndicator');
+const speedValueEl = document.getElementById('speedValue');
 const tripCounterEl = document.getElementById('tripCounter');
 const tripsStartedEl = document.getElementById('tripsStarted');
 const tripsActiveEl = document.getElementById('tripsActive');
@@ -140,13 +142,19 @@ playPauseBtn.addEventListener('click', () => {
 
 slider.addEventListener('input', () => {
   if (!simulation) return;
-  const t = Number(slider.value);
+  if (!simulation.trips || simulation.trips.length === 0) return;
+  const minTime = simulation.trips[0].startTime;
+  const maxTime = simulation.trips[simulation.trips.length-1].endTime;
+  let t = Number(slider.value);
+  if (t < minTime) t = minTime;
+  if (t > maxTime) t = maxTime;
   simulation.resetTo(t);
 });
 
 speedSel.addEventListener('change', () => {
   if (!simulation) return;
-  simulation.speed = Number(speedSel.value);
+  simulation.userSpeed = Number(speedSel.value);
+  if (!simulation.gapAccelActive) simulation.speed = simulation.userSpeed;
 });
 
 window.addEventListener('resize', () => {
@@ -156,23 +164,43 @@ window.addEventListener('resize', () => {
   composer.setSize(window.innerWidth, window.innerHeight);
 });
 
+// Global status bar and setStatus
+const statusId = 'init-status';
+let statusEl = document.getElementById(statusId);
+if (!statusEl) {
+  statusEl = document.createElement('div');
+  statusEl.id = statusId;
+  statusEl.style.position='absolute';
+  statusEl.style.top='8px';
+  statusEl.style.right='12px';
+  statusEl.style.padding='4px 8px';
+  statusEl.style.background='rgba(0,0,0,0.55)';
+  statusEl.style.font='12px/1.2 monospace';
+  statusEl.style.color='#8ff';
+  statusEl.style.zIndex='20';
+  document.body.appendChild(statusEl);
+}
+function setStatus(m) {
+  statusEl.textContent = m;
+  statusEl.style.transition = '';
+  statusEl.style.opacity = '1';
+  if (setStatus._timeout) clearTimeout(setStatus._timeout);
+  setStatus._timeout = setTimeout(() => {
+    statusEl.style.transition = 'opacity 0.5s';
+    statusEl.style.opacity = '0';
+    // Do NOT remove statusEl from DOM, just fade out
+  }, 4000);
+}
+
 async function init() {
-  const statusId = 'init-status';
-  let statusEl = document.getElementById(statusId);
-  if (!statusEl) {
-    statusEl = document.createElement('div');
-    statusEl.id = statusId;
-    statusEl.style.position='absolute';
-    statusEl.style.top='8px';
-    statusEl.style.right='12px';
-    statusEl.style.padding='4px 8px';
-    statusEl.style.background='rgba(0,0,0,0.55)';
-    statusEl.style.font='12px/1.2 monospace';
-    statusEl.style.color='#8ff';
-    statusEl.style.zIndex='20';
-    document.body.appendChild(statusEl);
-  }
-  const setStatus = (m) => { statusEl.textContent = m; };
+  // Debug: Show camera and pan position in status bar every second
+  // setInterval(() => {
+  //   const pos = camera.position;
+  //   const tgt = controls.target;
+  //   setStatus(
+  //     `Camera: (${pos.x.toFixed(2)}, ${pos.y.toFixed(2)}, ${pos.z.toFixed(2)}) | Pan: (${tgt.x.toFixed(2)}, ${tgt.y.toFixed(2)}, ${tgt.z.toFixed(2)})`
+  //   );
+  // }, 1000);
   try {
     setStatus('Loading map...');
     mapGroup = await loadNYCMap(scene);
@@ -185,14 +213,13 @@ async function init() {
       setStatus('Trip load failed; using empty set');
       trips = [];
     }
-    setStatus('Allocating pool...');
-    const pool = createPool(700);
-    pool.forEach(o => scene.add(o));
+  setStatus('Allocating pool...');
+  const pool = createPool(trips.length);
+  pool.forEach(o => scene.add(o));
     setStatus('Starting simulation...');
-    simulation = new Simulation(scene, pool, trips);
-    simulation.resetTo(0);
-    setStatus('Simulation running');
-    setTimeout(()=>statusEl.remove(), 4000);
+  simulation = new Simulation(scene, pool, trips);
+  setStatus('Simulation running');
+  setStatus('Mouse: Camera angle, +SHIFT key to pan');
   } catch (e) {
     console.error('Init failed', e);
     setStatus('Init error: ' + e.message);
@@ -221,28 +248,54 @@ function animate() {
         dateStr = formatDate(tripDate);
       }
     }
-    clockEl.textContent = dateStr ? `${dateStr} ${formatTime(simulation.simulationTime)}` : formatTime(simulation.simulationTime);
-    slider.value = Math.floor(simulation.simulationTime);
+    // Only show clock if trips are loaded and simulationTime is set to a valid start
+    if (
+      simulation.trips && simulation.trips.length > 0 &&
+      typeof simulation.simulationTime === 'number' &&
+      simulation.simulationTime >= simulation.trips[0].startTime &&
+      simulation.trips[0].startTime > 0
+    ) {
+      clockEl.textContent = dateStr ? `${dateStr} ${formatTime(simulation.simulationTime)}` : formatTime(simulation.simulationTime);
+      slider.min = Math.floor(simulation.trips[0].startTime);
+      slider.max = Math.floor(simulation.trips[simulation.trips.length-1].endTime);
+      slider.value = Math.floor(simulation.simulationTime);
+    } else {
+      clockEl.textContent = '';
+      slider.value = 0;
+    }
 
-    // --- Trip counter logic ---
-    // Track active trip IDs
-    const activeIds = new Set();
-    for (const orb of simulation.activeOrbs) {
-      if (orb.userData.trip && orb.userData.trip.id !== undefined) {
-        activeIds.add(orb.userData.trip.id);
+    // --- Trip counter logic (from simulation) ---
+    const activeCount = simulation.activeOrbs.length;
+    if (tripsStartedEl) tripsStartedEl.textContent = simulation.startedCount;
+    if (tripsActiveEl) tripsActiveEl.textContent = activeCount;
+    if (tripsCompletedEl) tripsCompletedEl.textContent = simulation.completedCount;
+
+    // Fare complete status for newly completed trips
+    if (simulation.completedTrips && Array.isArray(simulation.completedTrips)) {
+      if (!animate._lastCompletedCount) animate._lastCompletedCount = 0;
+      if (simulation.completedTrips.length > animate._lastCompletedCount) {
+        // Only show status for new completions
+        for (let i = animate._lastCompletedCount; i < simulation.completedTrips.length; i++) {
+          const trip = simulation.completedTrips[i];
+          // Address fallback: use dropoff or 'Trip End'
+          const address = trip.dropoffAddress || trip.dropoff || 'Trip End';
+          const cost = trip.fare ? trip.fare.toFixed(2) : '0.00';
+          setStatus(`Fare complete, ${address}: $${cost}`);
+        }
+        animate._lastCompletedCount = simulation.completedTrips.length;
       }
     }
-    // Increment tripsCompleted for trips that were active but now are not
-    for (const id of lastActiveIds) {
-      if (!activeIds.has(id)) tripsCompleted++;
-    }
-    lastActiveIds = activeIds;
 
-    // Update GUI
-    if (tripsActiveEl) tripsActiveEl.textContent = activeIds.size;
-    if (tripsCompletedEl) tripsCompletedEl.textContent = tripsCompleted;
-  // Heatmap update disabled (trails off)
-  // if (mapGroup && mapGroup.userData.heat) { mapGroup.userData.heat.update(simulation.activeOrbs); }
+    // Update speed indicator
+    if (simulation.gapAccelActive && speedIndicatorEl && speedValueEl) {
+      speedIndicatorEl.hidden = false;
+      speedValueEl.textContent = Math.round(simulation.speed);
+    } else if (speedIndicatorEl && speedValueEl) {
+      // Always visible: just update speed value, never hide
+      speedValueEl.textContent = Math.round(simulation.speed);
+    }
+    // Heatmap update disabled (trails off)
+    // if (mapGroup && mapGroup.userData.heat) { mapGroup.userData.heat.update(simulation.activeOrbs); }
   }
 
   // Hover detection (respect ongoing start/finish effects)

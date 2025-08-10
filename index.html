@@ -20,24 +20,32 @@
 <body>
   <canvas id="bg"></canvas>
   <div id="hud">
-    <div id="clock">00:00:00</div>
+    <div id="clockRow" style="display:flex;align-items:center;gap:0.7em;">
+      <div id="clock">00:00:00</div>
+    <div id="speedIndicator">🚀 <span id="speedValue">30</span>x</div>
+    </div>
     <div id="tripCounter" aria-live="polite">
-      <span class="counter-label">TRIPS:</span>
-      <span class="counter-label">ACTIVE</span>
-      <span id="tripsActive" class="counter-value">0</span>
-      <span style="margin-left:1.0em"></span>
-      <span class="counter-label">TAKEN</span>
-      <span id="tripsCompleted" class="counter-value">0</span>
+      <span class="counter-label main-label">TRIPS:</span>
+      <span class="counter-pairs">
+        <span class="counter-group"><span class="counter-label">ACTIVE</span> <span id="tripsActive" class="counter-value">0</span></span>
+        <span class="counter-group"><span class="counter-label">TAKEN</span> <span id="tripsCompleted" class="counter-value">0</span></span>
+      </span>
     </div>
     <div id="controls">
       <label for="timeline">Time</label>
       <input id="timeline" type="range" min="0" max="86400" value="0" step="1" />
       <button id="playPause" aria-pressed="true">Pause</button>
       <select id="speed">
-        <option value="30">30x</option>
-        <option value="60" selected>60x</option>
+        <option value="5">5x</option>
+        <option value="10">10x</option>
+        <option value="15">15x</option>
+        <option value="30" selected>30x</option>
+        <option value="60">60x</option>
         <option value="120">120x</option>
         <option value="300">300x</option>
+        <option value="600">600x</option>
+        <option value="900">900x</option>
+        <option value="1200">1200x</option>
       </select>
     </div>
   </div>

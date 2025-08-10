@@ -213,11 +213,43 @@ async function init() {
       setStatus('Trip load failed; using empty set');
       trips = [];
     }
+    // Convert per-day relative start/end (seconds since that day's midnight) into a single
+    // continuous absolute timeline measured in seconds from the first trip's midnight.
+    // This preserves chronological ordering across multiple days and fixes the issue where
+    // re-sorting purely by startTime (seconds-of-day) jumbled dates.
+    if (Array.isArray(trips) && trips.length > 0) {
+      // Base midnight
+      const baseMidnight = new Date(trips[0].pickupDate);
+      baseMidnight.setHours(0,0,0,0);
+      const baseMs = baseMidnight.getTime();
+      for (const trip of trips) {
+        const duration = trip.endTime - trip.startTime; // original same-day duration
+        // Absolute seconds from base midnight
+        const absStart = (trip.pickupTimestamp - baseMs) / 1000;
+        trip.startTime = absStart;
+        trip.endTime = absStart + duration;
+      }
+      trips.sort((a,b) => a.startTime - b.startTime);
+    }
   setStatus('Allocating pool...');
   const pool = createPool(trips.length);
   pool.forEach(o => scene.add(o));
     setStatus('Starting simulation...');
   simulation = new Simulation(scene, pool, trips);
+  // Initialize slider to exact first trip start time so UI reflects simulation baseline immediately
+  if (trips.length) {
+    const firstStart = Math.floor(trips[0].startTime);
+    const lastEnd = Math.floor(trips[trips.length - 1].endTime);
+    slider.min = firstStart;
+    slider.max = lastEnd;
+    slider.value = firstStart;
+    // Pre-populate clock once (animate will keep updating)
+    if (trips[0].pickupDate instanceof Date && !isNaN(trips[0].pickupDate)) {
+      clockEl.textContent = `${formatDate(trips[0].pickupDate)} ${formatTime(firstStart)}`;
+    } else {
+      clockEl.textContent = formatTime(firstStart);
+    }
+  }
   setStatus('Simulation running');
   setStatus('Mouse: Camera angle, +SHIFT key to pan');
   } catch (e) {
@@ -234,34 +266,30 @@ function animate() {
   last = now;
   if (simulation) {
     simulation.update(dt);
-    // Show date and time in the clock panel
-    let dateStr = '';
-    if (simulation.trips && simulation.trips.length > 0) {
-      // Find the trip whose pickup time is closest to the current simulation time
-      let idx = simulation.trips.findIndex(trip => {
-        return Math.floor(trip.startTime) >= Math.floor(simulation.simulationTime);
-      });
-      if (idx === -1) idx = simulation.trips.length - 1;
-      if (idx < 0) idx = 0;
-      const tripDate = simulation.trips[idx].pickupDate;
-      if (tripDate instanceof Date && !isNaN(tripDate)) {
-        dateStr = formatDate(tripDate);
+    // Show date and time in the clock panel with monotonic date logic
+    if (simulation.trips && simulation.trips.length > 0 && typeof simulation.simulationTime === 'number') {
+      const tripsArr = simulation.trips;
+      const simT = simulation.simulationTime;
+      const firstStart = tripsArr[0].startTime;
+      const lastEnd = tripsArr[tripsArr.length - 1].endTime;
+      if (simT >= firstStart && firstStart > 0) {
+        // Binary search for last trip with startTime <= simT
+        let lo = 0, hi = tripsArr.length - 1, best = 0;
+        while (lo <= hi) {
+          const mid = (lo + hi) >> 1;
+            if (tripsArr[mid].startTime <= simT) { best = mid; lo = mid + 1; } else { hi = mid - 1; }
+        }
+        const tripDate = tripsArr[best].pickupDate;
+        const dateStr2 = (tripDate instanceof Date && !isNaN(tripDate)) ? formatDate(tripDate) : '';
+        clockEl.textContent = dateStr2 ? `${dateStr2} ${formatTime(simT)}` : formatTime(simT);
+        // Update slider bounds once per animation frame (cheap) – assumes sorted
+        slider.min = Math.floor(firstStart);
+        slider.max = Math.floor(lastEnd);
+        slider.value = Math.floor(simT);
+      } else {
+        clockEl.textContent = '';
+        slider.value = 0;
       }
-    }
-    // Only show clock if trips are loaded and simulationTime is set to a valid start
-    if (
-      simulation.trips && simulation.trips.length > 0 &&
-      typeof simulation.simulationTime === 'number' &&
-      simulation.simulationTime >= simulation.trips[0].startTime &&
-      simulation.trips[0].startTime > 0
-    ) {
-      clockEl.textContent = dateStr ? `${dateStr} ${formatTime(simulation.simulationTime)}` : formatTime(simulation.simulationTime);
-      slider.min = Math.floor(simulation.trips[0].startTime);
-      slider.max = Math.floor(simulation.trips[simulation.trips.length-1].endTime);
-      slider.value = Math.floor(simulation.simulationTime);
-    } else {
-      clockEl.textContent = '';
-      slider.value = 0;
     }
 
     // --- Trip counter logic (from simulation) ---

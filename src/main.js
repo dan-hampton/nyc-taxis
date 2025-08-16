@@ -409,28 +409,19 @@ animate();
 
 // Coverage slider logic: rebuild map when changed (debounced)
 if (coverageSlider) {
-  const applyCoverage = async () => {
+  let covTimer = null;
+  const applyCoverage = () => {
     if (coverageValueEl) coverageValueEl.textContent = Math.round(Number(coverageSlider.value)*100)+'%';
-    // Remove existing map group
-    const old = scene.getObjectByName('NYCMap');
-    if (old) { scene.remove(old); }
-    // Rebuild map with new coverage factor
-    mapGroup = await loadNYCMap(scene, { coverageFactor: Number(coverageSlider.value) });
-    // Re-link simulation router if simulation already running
-    if (simulation && mapGroup && mapGroup.userData.roadRouter) {
-      simulation.router = mapGroup.userData.roadRouter;
-      // Invalidate future trip paths
-      if (simulation.trips) {
-        for (const trip of simulation.trips) {
-          delete trip._path; delete trip._segLengths; delete trip._totalLength;
-        }
+    if (mapGroup && mapGroup.userData && mapGroup.userData.setCoverageFactor) {
+      mapGroup.userData.setCoverageFactor(Number(coverageSlider.value));
+      if (simulation && mapGroup.userData.roadRouter) {
+        simulation.router = mapGroup.userData.roadRouter;
       }
     }
   };
-  let covTimer = null;
   coverageSlider.addEventListener('input', () => {
     if (coverageValueEl) coverageValueEl.textContent = Math.round(Number(coverageSlider.value)*100)+'%';
     if (covTimer) clearTimeout(covTimer);
-    covTimer = setTimeout(applyCoverage, 300); // debounce rebuild
+    covTimer = setTimeout(applyCoverage, 80); // lighter debounce for incremental pruning
   });
 }

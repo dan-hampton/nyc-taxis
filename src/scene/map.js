@@ -190,6 +190,9 @@ function addLabel(group, text, lon, lat, color) {
   const label = makeLabel(text, color);
   label.position.set(p.x, 1, p.z);
   label.renderOrder = 10;
+  // Store geographic reference for pruning
+  label.userData.lon = lon;
+  label.userData.lat = lat;
   group.add(label);
   return label;
 }
@@ -380,13 +383,16 @@ async function buildRoads(group) {
         if (!allowedTypes.includes(highway)) continue;
         const major = ['motorway','trunk','primary','secondary'].includes(highway);
         const roadName = (f.properties && f.properties.name) || '';
-        const draw = (coords) => {
+    const draw = (coords) => {
           if (!within(coords)) return;
           const pts = addRoadLine(group, roadGroup, coords, major ? matPrimary : matMinor);
           if (pts) {
-            typeData[highway].lines.push(roadGroup.children[roadGroup.children.length-1]);
-            typeData[highway].polylines.push(pts);
-            if (roadName) typeData[highway].named.push({ name: roadName, points: pts });
+      const lineRef = roadGroup.children[roadGroup.children.length-1];
+      // Attach original lon/lat coordinates for pruning
+      lineRef.userData.lonlat = coords.slice();
+      typeData[highway].lines.push(lineRef);
+      typeData[highway].polylines.push({ line: lineRef, pts });
+      if (roadName) typeData[highway].named.push({ name: roadName, points: pts, line: lineRef });
             added++;
           }
         };
@@ -403,9 +409,11 @@ async function buildRoads(group) {
   function rebuildRouter() {
     const allPolys = [];
     const namedPolys = [];
-    for (const t of allowedTypes) if (typeData[t].enabled) { allPolys.push(...typeData[t].polylines); namedPolys.push(...typeData[t].named); }
+    for (const t of allowedTypes) if (typeData[t].enabled) {
+      for (const entry of typeData[t].polylines) { if (entry.line.visible) allPolys.push(entry.pts); }
+      for (const r of typeData[t].named) { if (r.line.visible) namedPolys.push(r); }
+    }
     group.userData.roadRouter = buildRoadRouter(allPolys);
-    // nearestRoadName only over enabled types
     function nearestRoadName(worldPos, maxDist = 3.0) {
       let bestName = ''; let bestD2 = maxDist * maxDist; const px=worldPos.x, pz=worldPos.z;
       for (const r of namedPolys) {
@@ -413,7 +421,7 @@ async function buildRoads(group) {
         for (let i=0;i<pts.length-1;i++) {
           const a=pts[i], b=pts[i+1];
           const abx=b.x-a.x, abz=b.z-a.z; const apx=px-a.x, apz=pz-a.z;
-            const abLen2=abx*abx+abz*abz; if (!abLen2) continue;
+          const abLen2=abx*abx+abz*abz; if (!abLen2) continue;
           let t=(apx*abx+apz*abz)/abLen2; if (t<0) t=0; else if (t>1) t=1;
           const cx=a.x+abx*t, cz=a.z+abz*t; const dx=px-cx, dz=pz-cz; const d2=dx*dx+dz*dz;
           if (d2<bestD2) { bestD2=d2; bestName=r.name; }
@@ -441,6 +449,7 @@ async function buildRoads(group) {
   group.userData.roadTypes = allowedTypes.map(t => ({ type: t, enabled: typeData[t].enabled }));
   group.userData.toggleRoadType = toggleRoadType;
   group.userData.rebuildRoadRouter = rebuildRouter; // exposed if needed
+  group.userData._typeData = typeData; // expose for coverage pruning
 }
 
 
@@ -649,20 +658,65 @@ export async function loadNYCMap(scene, opts = {}) {
   let bounds, span;
   const ext = await (async()=>{ const gj = await fetchGeo('src/geo/roads.geojson'); if(!gj||!gj.features) return null; let minLon=Infinity,maxLon=-Infinity,minLat=Infinity,maxLat=-Infinity; const scan=(arr)=>{ for(const [lo,la] of arr){ if(lo<minLon)minLon=lo; if(lo>maxLon)maxLon=lo; if(la<minLat)minLat=la; if(la>maxLat)maxLat=la; } }; for(const f of gj.features){ const g=f.geometry; if(!g) continue; const t=g.type; const c=g.coordinates; if(t==='LineString') scan(c); else if(t==='MultiLineString') for(const line of c) scan(line); else if(t==='Polygon') for(const ring of c) scan(ring); else if(t==='MultiPolygon') for(const poly of c) for(const ring of poly) scan(ring); } if(minLon===Infinity) return null; return {minLon,maxLon,minLat,maxLat}; })();
   bounds = { minLon: ext.minLon, minLat: ext.minLat }; span = { lon: ext.maxLon - ext.minLon, lat: ext.maxLat - ext.minLat };
-  // Apply coverage factor (crop bounding box around center) to reduce map size & road build cost
-  const cf = THREE.MathUtils.clamp(coverageFactor, 0.1, 1.0);
-  if (cf < 0.999) {
-    const cropLon = span.lon * (1 - cf) * 0.5;
-    const cropLat = span.lat * (1 - cf) * 0.5;
-    bounds.minLon += cropLon;
-    bounds.minLat += cropLat;
-    span.lon *= cf;
-    span.lat *= cf;
-  }
+  const originalBounds = { ...bounds };
+  const originalSpan = { ...span };
+  const cf = THREE.MathUtils.clamp(coverageFactor, 0.1, 1.0); // initial
   const center = { lon: bounds.minLon + span.lon/2, lat: bounds.minLat + span.lat/2 };
-  group.userData = { scale: FIXED_SCALE, bounds, span, center, radiusKm, roadPadFactor, fullExtent, coverageFactor: cf };
+  group.userData = { scale: FIXED_SCALE, bounds, span, center, radiusKm, roadPadFactor, fullExtent, coverageFactor: cf, originalBounds, originalSpan };
   const gj = await fetchGeo('src/geo/boroughs.geojson'); buildBoroughs(group, gj);
   await buildRoads(group);
+  // Provide pruning method (incremental) without rebuilding geometry
+  group.userData.setCoverageFactor = (newCF) => {
+    const c = THREE.MathUtils.clamp(newCF, 0.01, 1.0);
+    if (Math.abs(c - group.userData.coverageFactor) < 1e-4) return;
+    group.userData.coverageFactor = c;
+    const ob = group.userData.originalBounds, os = group.userData.originalSpan;
+    const cropLon = os.lon * (1 - c) * 0.5;
+    const cropLat = os.lat * (1 - c) * 0.5;
+    const minLon = ob.minLon + cropLon;
+    const maxLon = ob.minLon + os.lon - cropLon;
+    const minLat = ob.minLat + cropLat;
+    const maxLat = ob.minLat + os.lat - cropLat;
+    // Show/hide roads via stored lon/lat coords
+    const roadLayer = group.getObjectByName('RoadLayer');
+    if (roadLayer){
+      for (const child of roadLayer.children){
+        if (child.isLine && child.userData.lonlat){
+          let inside=false;
+          for (const [lon,lat] of child.userData.lonlat){ if (lon>=minLon && lon<=maxLon && lat>=minLat && lat<=maxLat){ inside=true; break; } }
+          child.visible = inside;
+        }
+      }
+    }
+    // Hide borough outlines/fills similarly (approximate using first vertex set if lonlat not stored)
+    for (const child of group.children){
+      if (child === roadLayer) continue;
+      if (child.name === 'NYPolyOutline') { // always keep boundary visible
+        child.visible = true; continue;
+      }
+      if (child.isLine || child.isMesh){
+        const pos = child.geometry && child.geometry.attributes && child.geometry.attributes.position && child.geometry.attributes.position.array;
+        if (!pos) continue;
+        let inside=false;
+        for (let i=0;i<pos.length;i+=3){
+          const x=pos[i], z=pos[i+2];
+          // Need inverse from world x,z relative to original extent (use original scale mapping)
+          const lon = (x / group.userData.scale + 0.5)*os.lon + ob.minLon;
+          const lat = (-z / group.userData.scale + 0.5)*os.lat + ob.minLat;
+          if (lon>=minLon && lon<=maxLon && lat>=minLat && lat<=maxLat){ inside=true; break; }
+        }
+        child.visible = inside;
+      }
+    }
+    // Prune borough (and other) labels with lon/lat metadata
+    for (const child of group.children){
+      if (child.isSprite && child.userData && typeof child.userData.lon === 'number') {
+        const lon = child.userData.lon, lat = child.userData.lat;
+        child.visible = (lon>=minLon && lon<=maxLon && lat>=minLat && lat<=maxLat);
+      }
+    }
+    if (group.userData.rebuildRoadRouter) group.userData.rebuildRoadRouter();
+  };
   // buildLatLonGrid(group);
   // await buildHeatmapLayer(group);
   await addGeoLandmark(group, { url: 'src/geo/centralpark.geojson', name: 'Central Park', color: 0x4cff92, label: 'Central Park', bbox: { minLon: -73.99, maxLon: -73.94, minLat: 40.76, maxLat: 40.81 }, minPoints: 200 });

@@ -68,6 +68,8 @@ const slider = document.getElementById('timeline');
 const playPauseBtn = document.getElementById('playPause');
 const speedSel = document.getElementById('speed');
 const tooltip = document.getElementById('tooltip');
+const coverageSlider = document.getElementById('coverage');
+const coverageValueEl = document.getElementById('coverageValue');
 
 let simulation; // will hold Simulation instance
 let mapGroup; // reference to NYCMap group for heat layer
@@ -206,7 +208,7 @@ async function init() {
   // }, 1000);
   try {
     setStatus('Loading map...');
-    mapGroup = await loadNYCMap(scene);
+  mapGroup = await loadNYCMap(scene, { coverageFactor: coverageSlider ? Number(coverageSlider.value) : 1 });
     // Build road filter panel once map & roads loaded
     if (mapGroup && mapGroup.userData && mapGroup.userData.roadTypes) {
       const container = document.getElementById('roadFilters');
@@ -404,3 +406,31 @@ function animate() {
 
 init();
 animate();
+
+// Coverage slider logic: rebuild map when changed (debounced)
+if (coverageSlider) {
+  const applyCoverage = async () => {
+    if (coverageValueEl) coverageValueEl.textContent = Math.round(Number(coverageSlider.value)*100)+'%';
+    // Remove existing map group
+    const old = scene.getObjectByName('NYCMap');
+    if (old) { scene.remove(old); }
+    // Rebuild map with new coverage factor
+    mapGroup = await loadNYCMap(scene, { coverageFactor: Number(coverageSlider.value) });
+    // Re-link simulation router if simulation already running
+    if (simulation && mapGroup && mapGroup.userData.roadRouter) {
+      simulation.router = mapGroup.userData.roadRouter;
+      // Invalidate future trip paths
+      if (simulation.trips) {
+        for (const trip of simulation.trips) {
+          delete trip._path; delete trip._segLengths; delete trip._totalLength;
+        }
+      }
+    }
+  };
+  let covTimer = null;
+  coverageSlider.addEventListener('input', () => {
+    if (coverageValueEl) coverageValueEl.textContent = Math.round(Number(coverageSlider.value)*100)+'%';
+    if (covTimer) clearTimeout(covTimer);
+    covTimer = setTimeout(applyCoverage, 300); // debounce rebuild
+  });
+}

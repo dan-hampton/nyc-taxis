@@ -641,7 +641,7 @@ async function buildHeatmapLayer(group) {
 // Utility to load NYC map
 // params: scene: the parent scene to add the map to
 export async function loadNYCMap(scene, opts = {}) {
-  const { radiusKm = 15, roadPadFactor = 0.02, fullExtent = true } = opts;
+  const { radiusKm = 15, roadPadFactor = 0.02, fullExtent = true, coverageFactor = 1.0 } = opts;
   const group = new THREE.Group();
   group.name = 'NYCMap';
   const FIXED_SCALE = 220;
@@ -649,8 +649,18 @@ export async function loadNYCMap(scene, opts = {}) {
   let bounds, span;
   const ext = await (async()=>{ const gj = await fetchGeo('src/geo/roads.geojson'); if(!gj||!gj.features) return null; let minLon=Infinity,maxLon=-Infinity,minLat=Infinity,maxLat=-Infinity; const scan=(arr)=>{ for(const [lo,la] of arr){ if(lo<minLon)minLon=lo; if(lo>maxLon)maxLon=lo; if(la<minLat)minLat=la; if(la>maxLat)maxLat=la; } }; for(const f of gj.features){ const g=f.geometry; if(!g) continue; const t=g.type; const c=g.coordinates; if(t==='LineString') scan(c); else if(t==='MultiLineString') for(const line of c) scan(line); else if(t==='Polygon') for(const ring of c) scan(ring); else if(t==='MultiPolygon') for(const poly of c) for(const ring of poly) scan(ring); } if(minLon===Infinity) return null; return {minLon,maxLon,minLat,maxLat}; })();
   bounds = { minLon: ext.minLon, minLat: ext.minLat }; span = { lon: ext.maxLon - ext.minLon, lat: ext.maxLat - ext.minLat };
+  // Apply coverage factor (crop bounding box around center) to reduce map size & road build cost
+  const cf = THREE.MathUtils.clamp(coverageFactor, 0.1, 1.0);
+  if (cf < 0.999) {
+    const cropLon = span.lon * (1 - cf) * 0.5;
+    const cropLat = span.lat * (1 - cf) * 0.5;
+    bounds.minLon += cropLon;
+    bounds.minLat += cropLat;
+    span.lon *= cf;
+    span.lat *= cf;
+  }
   const center = { lon: bounds.minLon + span.lon/2, lat: bounds.minLat + span.lat/2 };
-  group.userData = { scale: FIXED_SCALE, bounds, span, center, radiusKm, roadPadFactor, fullExtent };
+  group.userData = { scale: FIXED_SCALE, bounds, span, center, radiusKm, roadPadFactor, fullExtent, coverageFactor: cf };
   const gj = await fetchGeo('src/geo/boroughs.geojson'); buildBoroughs(group, gj);
   await buildRoads(group);
   // buildLatLonGrid(group);

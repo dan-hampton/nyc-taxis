@@ -51,6 +51,13 @@
         <option value="1200">1200x</option>
       </select>
     </div>
+    <div id="mapCoveragePanel" aria-label="Map Coverage" style="margin-top:0.6em;">
+      <div class="panel-title">Coverage</div>
+      <div style="display:flex;align-items:center;gap:0.4em;">
+        <input id="coverage" type="range" min="0.2" max="1" step="0.05" value="1" />
+        <span id="coverageValue" style="min-width:3ch;text-align:right;">100%</span>
+      </div>
+    </div>
     <div id="roadFilterPanel" aria-label="Road Type Filters">
       <div class="panel-title">Road Types</div>
       <div id="roadFilters" class="road-filter-grid"></div>

@@ -207,6 +207,43 @@ async function init() {
   try {
     setStatus('Loading map...');
     mapGroup = await loadNYCMap(scene);
+    // Build road filter panel once map & roads loaded
+    if (mapGroup && mapGroup.userData && mapGroup.userData.roadTypes) {
+      const container = document.getElementById('roadFilters');
+      if (container) {
+        container.innerHTML = '';
+        const makeLabel = (type) => type.charAt(0).toUpperCase()+type.slice(1);
+        for (const rt of mapGroup.userData.roadTypes) {
+          const id = 'rf_' + rt.type;
+          const wrap = document.createElement('label');
+          wrap.htmlFor = id;
+          wrap.title = 'Toggle ' + rt.type + ' roads';
+          const cb = document.createElement('input');
+          cb.type = 'checkbox';
+          cb.id = id;
+          cb.checked = rt.enabled;
+          cb.addEventListener('change', () => {
+            if (mapGroup.userData.toggleRoadType) {
+              mapGroup.userData.toggleRoadType(rt.type, cb.checked);
+              // Invalidate cached paths for future trips (existing paths remain)
+              if (simulation && simulation.trips) {
+                for (const trip of simulation.trips) {
+                  // Only clear if trip not yet started
+                  if (!trip._started) {
+                    delete trip._path; delete trip._segLengths; delete trip._totalLength;
+                  }
+                }
+              }
+            }
+          });
+          wrap.appendChild(cb);
+          const span = document.createElement('span');
+          span.textContent = makeLabel(rt.type);
+          wrap.appendChild(span);
+          container.appendChild(wrap);
+        }
+      }
+    }
     setStatus('Loading trips...');
     let trips = [];
     try {
@@ -268,7 +305,7 @@ function animate() {
   const dt = (now - last) / 1000; // seconds
   last = now;
   if (simulation) {
-    simulation.update(dt);
+  simulation.update(dt, camera);
     // Show date and time in the clock panel with monotonic date logic
     if (simulation.trips && simulation.trips.length > 0 && typeof simulation.simulationTime === 'number') {
       const tripsArr = simulation.trips;

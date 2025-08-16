@@ -113,7 +113,7 @@ export class Simulation {
     }
   }
 
- update(dt) {
+ update(dt, camera) {
     if (this.playing) {
       this.simulationTime += dt * this.speed;
       // Stop at the last trip's end time
@@ -162,7 +162,13 @@ export class Simulation {
           const lat = trip.endPos.lat.toFixed(4);
           textLabelStr = `${lat},${lon}`;
         }
-        const label = createTextLabel(textLabelStr, { font: '9px monospace', color: '#bbb' });
+  // Use consistent Helvetica stack for trip labels (was monospace)
+        const label = createTextLabel(textLabelStr, { font: "9px 'Helvetica Neue', Helvetica, Arial, sans-serif", color: '#bbb' });
+        // Ensure label performs normal depth testing so it doesn't appear embedded when viewed top-down
+        if (label.material) {
+          label.material.depthTest = true; // allow orb to occlude if actually above
+          label.material.needsUpdate = true;
+        }
         label.position.set(0, 0.9, 0);
         orb.add(label);
         orb.userData.label = label;
@@ -237,8 +243,24 @@ export class Simulation {
       }
       // Keep label above orb (if added)
       if (orb.userData.label) {
-        orb.userData.label.position.y = Math.max(0.5, orb.scale.x * 0.7 + 0.3);
-        // Ensure it faces camera: handled by Sprite automatically, but avoid depth fighting
+        const orbRadius = 0.25; // sphere geometry base radius
+        const baseScale = orb.userData.baseScale || orb.scale.x; // stable size (avoid pulse jitter)
+        const halfLabelH = orb.userData.label.scale.y * 0.5;
+        const surface = orbRadius * baseScale;
+        const baseClearance = 0.08; // slightly larger minimal gap
+        let offset = surface + halfLabelH + baseClearance;
+        if (camera && camera.isCamera) {
+          const camDir = this.tmpV1;
+          camera.getWorldDirection(camDir);
+          const verticality = Math.min(1, Math.abs(camDir.y)); // 0 horizon, 1 straight down
+          // Use steeper curve for extra lift near top-down
+          const vCurve = Math.pow(verticality, 1.2);
+          const extra = vCurve * (surface * 3.0 + 0.4);
+          offset += extra;
+          const maxOffset = surface * 5 + 1.2;
+          if (offset > maxOffset) offset = maxOffset;
+        }
+        orb.userData.label.position.y = offset;
       }
     }
 
